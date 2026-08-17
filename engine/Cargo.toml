@@ -1,0 +1,17 @@
+[package]
+name = "translatecode-engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tree-sitter = "0.26.12"
+tree-sitter-dart = "0.2.0"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

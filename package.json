@@ -1,0 +1,20 @@
+{
+  "name": "translatecode",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "engine:build": "sh scripts/build-engine.sh",
+    "build": "npm run engine:build && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.3",
+    "@codemirror/lang-python": "^6.1.6",
+    "@uiw/react-codemirror": "^4.23.10",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.10"
+  }
+}
