@@ -12,7 +12,11 @@ pub struct SourceSpan {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Severity { Error, Warning, Info }
+pub enum Severity {
+    Error,
+    Warning,
+    Info,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {

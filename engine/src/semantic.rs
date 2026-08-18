@@ -44,18 +44,26 @@ impl SemanticType {
         }
 
         for (open, close) in [('<', '>'), ('[', ']')] {
-            let Some(index) = value.find(open) else { continue };
-            if !value.ends_with(close) { continue; }
+            let Some(index) = value.find(open) else {
+                continue;
+            };
+            if !value.ends_with(close) {
+                continue;
+            }
             let container = value[..index].trim();
             let arguments = split_top_level(&value[index + 1..value.len() - 1], ',')
                 .into_iter()
                 .map(Self::parse)
                 .collect::<Option<Vec<_>>>()?;
             return match container {
-                "List" | "Array" | "Vec" | "Iterable" | "list" | "tuple" =>
-                    arguments.into_iter().next().map(|item| Self::List(Box::new(item))),
-                "Set" | "HashSet" | "set" =>
-                    arguments.into_iter().next().map(|item| Self::Set(Box::new(item))),
+                "List" | "Array" | "Vec" | "Iterable" | "list" | "tuple" => arguments
+                    .into_iter()
+                    .next()
+                    .map(|item| Self::List(Box::new(item))),
+                "Set" | "HashSet" | "set" => arguments
+                    .into_iter()
+                    .next()
+                    .map(|item| Self::Set(Box::new(item))),
                 "Map" | "HashMap" | "dict" if arguments.len() == 2 => Some(Self::Map(
                     Box::new(arguments[0].clone()),
                     Box::new(arguments[1].clone()),
@@ -66,8 +74,8 @@ impl SemanticType {
 
         Some(match value {
             "str" | "String" | "string" => Self::String,
-            "int" | "Int" | "i8" | "i16" | "i32" | "i64" | "isize"
-            | "u8" | "u16" | "u32" | "u64" | "usize" => Self::Integer,
+            "int" | "Int" | "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32"
+            | "u64" | "usize" => Self::Integer,
             "float" | "double" | "Float" | "Double" | "f32" | "f64" | "num" => Self::Float,
             "bool" | "boolean" | "Boolean" | "Bool" => Self::Boolean,
             "void" | "Void" | "()" | "None" => Self::Void,
@@ -84,8 +92,12 @@ impl SemanticType {
         if value.starts_with('"') || value.starts_with('\'') || value.contains("format!(") {
             return Self::String;
         }
-        if value.parse::<i64>().is_ok() { return Self::Integer; }
-        if value.parse::<f64>().is_ok() { return Self::Float; }
+        if value.parse::<i64>().is_ok() {
+            return Self::Integer;
+        }
+        if value.parse::<f64>().is_ok() {
+            return Self::Float;
+        }
         if value.starts_with('[') && value.ends_with(']') {
             let inner = &value[1..value.len() - 1];
             let element = split_top_level(inner, ',')
@@ -167,7 +179,9 @@ mod tests {
             );
         }
         assert_eq!(
-            SemanticType::parse("dict[str, list[int]]").unwrap().canonical(),
+            SemanticType::parse("dict[str, list[int]]")
+                .unwrap()
+                .canonical(),
             "map<string,list<int>>"
         );
     }

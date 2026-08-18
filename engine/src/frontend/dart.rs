@@ -1,13 +1,20 @@
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
-use crate::diagnostic::{Diagnostic, Severity, SourcePosition, SourceSpan};
-use crate::frontend::Frontend;
+use crate::diagnostic::{Diagnostic, Severity};
+use crate::frontend::{
+    common::{
+        self, collect_syntax_errors, direct_child_of_kind, direct_named_children, field_text,
+        find_first, first_named_child, operator_between, span, text as node_text,
+        unwrap_parenthesized, walk_named, AstLanguage,
+    },
+    Frontend,
+};
 use crate::typed_ir::{
     Argument, Body, BodyKind, CatchClause, ClassDeclaration, ClassKind, ClassMember,
     CollectionElement, CompilationUnit, ConstructorDeclaration, Declaration, EnumDeclaration,
     Expression, ExpressionKind, ExtensionDeclaration, FieldDeclaration, FunctionDeclaration,
-    ImportDeclaration, Literal, Parameter, ParameterKind, Pattern, PatternField, PatternKind, Statement,
-    StatementKind, StringPart, SwitchCase, SwitchExpressionCase, TypeAliasDeclaration,
+    ImportDeclaration, Literal, Parameter, ParameterKind, Pattern, PatternField, PatternKind,
+    Statement, StatementKind, StringPart, SwitchCase, SwitchExpressionCase, TypeAliasDeclaration,
     TypeParameter, TypeReference,
 };
 
@@ -15,37 +22,14 @@ pub struct DartFrontend;
 
 impl Frontend for DartFrontend {
     fn parse(&self, source: &str) -> CompilationUnit {
-        let mut parser = Parser::new();
-        if parser
-            .set_language(&tree_sitter_dart::LANGUAGE.into())
-            .is_err()
-        {
-            return CompilationUnit {
-                imports: Vec::new(),
-                declarations: Vec::new(),
-                diagnostics: vec![Diagnostic {
-                    code: "DART0001",
-                    severity: Severity::Error,
-                    message: "Unable to initialize the Dart parser".into(),
-                    span: SourceSpan::default(),
-                }],
-            };
-        }
-        let Some(tree) = parser.parse(source, None) else {
-            return CompilationUnit {
-                imports: Vec::new(),
-                declarations: Vec::new(),
-                diagnostics: vec![Diagnostic {
-                    code: "DART0002",
-                    severity: Severity::Error,
-                    message: "The Dart parser did not produce a syntax tree".into(),
-                    span: SourceSpan::default(),
-                }],
-            };
+        let language = AstLanguage::Dart;
+        let tree = match common::syntax_tree(source, language) {
+            Ok(tree) => tree,
+            Err(unit) => return unit,
         };
         let root = tree.root_node();
         let mut unit = CompilationUnit::default();
-        collect_syntax_errors(root, source, &mut unit.diagnostics);
+        collect_syntax_errors(root, source, language, &mut unit.diagnostics);
         let mut cursor = root.walk();
         for node in root.named_children(&mut cursor) {
             if node.kind() == "import_or_export" {
@@ -78,7 +62,11 @@ fn lower_import(node: Node<'_>, source: &str) -> ImportDeclaration {
     let uri = node
         .child_by_field_name("uri")
         .or_else(|| find_first(node, "uri"))
-        .map(|value| node_text(value, source).trim_matches(['\'', '"']).to_string())
+        .map(|value| {
+            node_text(value, source)
+                .trim_matches(['\'', '"'])
+                .to_string()
+        })
         .unwrap_or_default();
     let text = node_text(node, source);
     let prefix = text
@@ -492,6 +480,9 @@ fn lower_block(node: Node<'_>, source: &str) -> Vec<Statement> {
     let mut statements = Vec::new();
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
+        if child.kind() == "comment" {
+            continue;
+        }
         statements.push(lower_statement(child, source));
     }
     statements
@@ -751,6 +742,13 @@ fn lower_expression(node: Node<'_>, source: &str) -> Expression {
             .unwrap_or_else(|| ExpressionKind::Raw {
                 syntax_kind: node.kind().into(),
             }),
+        "instantiation_expression" => node
+            .child_by_field_name("function")
+            .or_else(|| first_named_child(node))
+            .map(|value| ExpressionKind::Identifier(node_text(value, source).to_string()))
+            .unwrap_or_else(|| ExpressionKind::Raw {
+                syntax_kind: node.kind().into(),
+            }),
         "assignable_expression" => {
             match (
                 node.child_by_field_name("object"),
@@ -826,7 +824,7 @@ fn lower_expression(node: Node<'_>, source: &str) -> Expression {
         "call_expression" => lower_call_expression(node, source),
         "const_object_expression" | "new_expression" => lower_object_creation(node, source),
         "list_literal" => lower_list_literal(node, source),
-        "set_or_map_literal" => lower_map_literal(node, source),
+        "set_or_map_literal" => lower_set_or_map_literal(node, source),
         "function_expression" => lower_closure(node, source),
         "await_expression" => first_named_child(node)
             .map(|value| ExpressionKind::Await(Box::new(lower_expression(value, source))))
@@ -925,13 +923,59 @@ fn lower_call_expression(node: Node<'_>, source: &str) -> ExpressionKind {
         .child_by_field_name("arguments")
         .or_else(|| direct_child_of_kind(node, "arguments"));
     match callee {
-        Some(callee) => ExpressionKind::Call {
-            callee: Box::new(lower_expression(callee, source)),
-            arguments: arguments_node
+        Some(callee) => {
+            let (callable, type_arguments) = if callee.kind() == "instantiation_expression" {
+                let callable = callee
+                    .child_by_field_name("function")
+                    .or_else(|| first_named_child(callee))
+                    .unwrap_or(callee);
+                let type_arguments = callee
+                    .child_by_field_name("type_arguments")
+                    .or_else(|| direct_child_of_kind(callee, "type_arguments"))
+                    .map(|arguments| {
+                        direct_named_children(arguments)
+                            .into_iter()
+                            .filter(|child| child.kind() == "type")
+                            .filter_map(|child| parse_type_reference(node_text(child, source)))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                (callable, type_arguments)
+            } else {
+                (callee, Vec::new())
+            };
+            let mut lowered_callee = lower_expression(callable, source);
+            let arguments = arguments_node
                 .map(|value| lower_arguments(value, source))
-                .unwrap_or_default(),
-            type_arguments: Vec::new(),
-        },
+                .unwrap_or_default();
+            if let ExpressionKind::Member {
+                object, property, ..
+            } = &mut lowered_callee.kind
+            {
+                if property == "from"
+                    && matches!(&object.kind, ExpressionKind::Identifier(value) if value == "Set")
+                {
+                    return ExpressionKind::ObjectCreation {
+                        type_ref: TypeReference {
+                            name: "Set".into(),
+                            arguments: Vec::new(),
+                            nullable: false,
+                        },
+                        constructor: Some("from".into()),
+                        arguments,
+                        is_const: false,
+                    };
+                }
+                if property == "sublist" {
+                    *property = "slice".into();
+                }
+            }
+            ExpressionKind::Call {
+                callee: Box::new(lowered_callee),
+                arguments,
+                type_arguments,
+            }
+        }
         None => ExpressionKind::Raw {
             syntax_kind: node.kind().into(),
         },
@@ -1050,6 +1094,42 @@ fn lower_map_literal(node: Node<'_>, source: &str) -> ExpressionKind {
     }
 }
 
+fn lower_set_or_map_literal(node: Node<'_>, source: &str) -> ExpressionKind {
+    let type_arguments = find_first(node, "type_arguments")
+        .map(|arguments| {
+            direct_named_children(arguments)
+                .into_iter()
+                .filter(|child| child.kind() == "type")
+                .filter_map(|child| parse_type_reference(node_text(child, source)))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let children = direct_named_children(node)
+        .into_iter()
+        .filter(|child| child.kind() != "type_arguments")
+        .collect::<Vec<_>>();
+    let is_set = type_arguments.len() == 1 || children.iter().any(|child| child.kind() != "pair");
+    if !is_set {
+        return lower_map_literal(node, source);
+    }
+    ExpressionKind::ObjectCreation {
+        type_ref: TypeReference {
+            name: "Set".into(),
+            arguments: type_arguments,
+            nullable: false,
+        },
+        constructor: Some("literal".into()),
+        arguments: children
+            .into_iter()
+            .map(|child| Argument {
+                name: None,
+                value: lower_expression(child, source),
+            })
+            .collect(),
+        is_const: node_text(node, source).trim_start().starts_with("const "),
+    }
+}
+
 fn lower_closure(node: Node<'_>, source: &str) -> ExpressionKind {
     let parameters = direct_child_of_kind(node, "formal_parameter_list")
         .map(|value| lower_parameters(value, source))
@@ -1132,7 +1212,7 @@ fn lower_pattern(node: Node<'_>, source: &str) -> Pattern {
                 .find('(')
                 .and_then(|open| source_text.rfind(')').map(|close| (open, close)))
                 .map(|(open, close)| {
-                    split_top_level(&source_text[open + 1..close])
+                    common::split_top_level(&source_text[open + 1..close])
                         .into_iter()
                         .filter_map(|field| {
                             let (name, binding) = field.split_once(':')?;
@@ -1214,22 +1294,6 @@ fn is_expression_kind(kind: &str) -> bool {
                 | "list_literal"
                 | "set_or_map_literal"
         )
-}
-
-fn operator_between(left: Node<'_>, right: Node<'_>, source: &str) -> String {
-    source
-        .get(left.end_byte()..right.start_byte())
-        .unwrap_or("")
-        .trim()
-        .to_string()
-}
-
-fn unwrap_parenthesized(node: Node<'_>) -> Node<'_> {
-    if node.kind() == "parenthesized_expression" {
-        first_named_child(node).unwrap_or(node)
-    } else {
-        node
-    }
 }
 
 fn lower_parameters(node: Node<'_>, source: &str) -> Vec<Parameter> {
@@ -1329,61 +1393,14 @@ fn parse_type_reference(raw: &str) -> Option<TypeReference> {
     if raw.is_empty() {
         return None;
     }
-    let nullable = raw.ends_with('?');
-    let clean = raw.trim_end_matches('?').trim();
-    if let Some(open) = clean.find('<') {
-        let close = clean.rfind('>')?;
-        let name = clean[..open].trim().to_string();
-        let arguments = split_top_level(&clean[open + 1..close])
-            .iter()
-            .filter_map(|value| parse_type_reference(value))
-            .collect();
-        Some(TypeReference {
-            name,
-            arguments,
-            nullable,
-        })
-    } else {
-        Some(TypeReference {
-            name: clean.to_string(),
-            arguments: Vec::new(),
-            nullable,
-        })
-    }
+    Some(common::type_from_text(raw, AstLanguage::Dart))
 }
 
 fn parse_type_list(raw: &str) -> Vec<TypeReference> {
-    split_top_level(raw)
-        .iter()
+    common::split_top_level(raw)
+        .into_iter()
         .filter_map(|value| parse_type_reference(value))
         .collect()
-}
-
-fn split_top_level(raw: &str) -> Vec<String> {
-    let mut values = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-    for character in raw.chars() {
-        match character {
-            '<' | '(' | '[' => {
-                depth += 1;
-                current.push(character);
-            }
-            '>' | ')' | ']' => {
-                depth -= 1;
-                current.push(character);
-            }
-            ',' if depth == 0 => {
-                values.push(current.trim().to_string());
-                current.clear();
-            }
-            _ => current.push(character),
-        }
-    }
-    if !current.trim().is_empty() {
-        values.push(current.trim().to_string());
-    }
-    values
 }
 
 fn clause_after(raw: &str, start: &str, stop: &str) -> Option<String> {
@@ -1396,90 +1413,6 @@ fn clause_from(raw: &str, start: &str, stop: &str) -> Option<String> {
     let offset = raw.find(&marker)? + marker.len();
     let value = raw[offset..].trim();
     Some(value.split(stop).next().unwrap_or(value).trim().to_string())
-}
-
-fn field_text(node: Node<'_>, field: &str, source: &str) -> Option<String> {
-    node.child_by_field_name(field)
-        .map(|child| node_text(child, source).to_string())
-}
-
-fn node_text<'a>(node: Node<'_>, source: &'a str) -> &'a str {
-    source.get(node.byte_range()).unwrap_or("")
-}
-
-fn find_first<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
-    if node.kind() == kind {
-        return Some(node);
-    }
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        if let Some(found) = find_first(child, kind) {
-            return Some(found);
-        }
-    }
-    None
-}
-
-fn direct_child_of_kind<'tree>(node: Node<'tree>, kind: &str) -> Option<Node<'tree>> {
-    let mut cursor = node.walk();
-    let found = node
-        .named_children(&mut cursor)
-        .find(|child| child.kind() == kind);
-    found
-}
-
-fn first_named_child(node: Node<'_>) -> Option<Node<'_>> {
-    let mut cursor = node.walk();
-    let found = node.named_children(&mut cursor).next();
-    found
-}
-
-fn direct_named_children(node: Node<'_>) -> Vec<Node<'_>> {
-    let mut cursor = node.walk();
-    node.named_children(&mut cursor).collect()
-}
-
-fn walk_named(node: Node<'_>, visitor: &mut impl FnMut(Node<'_>)) {
-    let mut cursor = node.walk();
-    for child in node.named_children(&mut cursor) {
-        visitor(child);
-        walk_named(child, visitor);
-    }
-}
-
-fn collect_syntax_errors(node: Node<'_>, source: &str, diagnostics: &mut Vec<Diagnostic>) {
-    if node.is_error() || node.is_missing() {
-        diagnostics.push(Diagnostic {
-            code: "DART1001",
-            severity: Severity::Error,
-            message: format!(
-                "Unexpected Dart syntax near `{}`",
-                node_text(node, source).chars().take(32).collect::<String>()
-            ),
-            span: span(node),
-        });
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        collect_syntax_errors(child, source, diagnostics);
-    }
-}
-
-fn span(node: Node<'_>) -> SourceSpan {
-    let start = node.start_position();
-    let end = node.end_position();
-    SourceSpan {
-        start: SourcePosition {
-            byte: node.start_byte(),
-            line: start.row + 1,
-            column: start.column + 1,
-        },
-        end: SourcePosition {
-            byte: node.end_byte(),
-            line: end.row + 1,
-            column: end.column + 1,
-        },
-    }
 }
 
 #[cfg(test)]
@@ -1531,8 +1464,7 @@ void main() {}
         assert_eq!(unit.imports[1].prefix.as_deref(), Some("dio"));
         assert_eq!(unit.imports[1].show, vec!["Dio", "Options"]);
         assert!(unit.diagnostics.iter().any(|diagnostic| {
-            diagnostic.code == "DART2001"
-                && diagnostic.message.contains("package:dio/dio.dart")
+            diagnostic.code == "DART2001" && diagnostic.message.contains("package:dio/dio.dart")
         }));
     }
 

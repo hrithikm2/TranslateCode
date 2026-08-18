@@ -80,7 +80,10 @@ fn emit_imports(program: &str, needs_runtime: bool) -> String {
         ("List", "java.util.List"),
         ("Map", "java.util.Map"),
         ("Objects", "java.util.Objects"),
-        ("CompletableFuture", "java.util.concurrent.CompletableFuture"),
+        (
+            "CompletableFuture",
+            "java.util.concurrent.CompletableFuture",
+        ),
         ("Function", "java.util.function.Function"),
     ];
     for (symbol, path) in symbols {
@@ -1621,17 +1624,39 @@ fn infer_local_type(
         return emit_raw_type(&words[..words.len() - 1].join(" "));
     }
     let raw = initializer.map(|value| value.source.as_str()).unwrap_or("");
-    if let Some(Expression { kind: ExpressionKind::ListLiteral { element_type, elements }, .. }) = initializer {
+    if let Some(Expression {
+        kind:
+            ExpressionKind::ListLiteral {
+                element_type,
+                elements,
+            },
+        ..
+    }) = initializer
+    {
         let item = element_type
             .as_ref()
             .map(|value| emit_type(value, true))
-            .or_else(|| elements.iter().find_map(|element| match element {
-                CollectionElement::Expression(Expression { kind: ExpressionKind::Literal(Literal::Integer(_)), .. }) => Some("Integer".into()),
-                CollectionElement::Expression(Expression { kind: ExpressionKind::Literal(Literal::Float(_)), .. }) => Some("Double".into()),
-                CollectionElement::Expression(Expression { kind: ExpressionKind::Literal(Literal::Bool(_)), .. }) => Some("Boolean".into()),
-                CollectionElement::Expression(Expression { kind: ExpressionKind::Literal(Literal::String(_)), .. }) => Some("String".into()),
-                _ => None,
-            }))
+            .or_else(|| {
+                elements.iter().find_map(|element| match element {
+                    CollectionElement::Expression(Expression {
+                        kind: ExpressionKind::Literal(Literal::Integer(_)),
+                        ..
+                    }) => Some("Integer".into()),
+                    CollectionElement::Expression(Expression {
+                        kind: ExpressionKind::Literal(Literal::Float(_)),
+                        ..
+                    }) => Some("Double".into()),
+                    CollectionElement::Expression(Expression {
+                        kind: ExpressionKind::Literal(Literal::Bool(_)),
+                        ..
+                    }) => Some("Boolean".into()),
+                    CollectionElement::Expression(Expression {
+                        kind: ExpressionKind::Literal(Literal::String(_)),
+                        ..
+                    }) => Some("String".into()),
+                    _ => None,
+                })
+            })
             .unwrap_or_else(|| "Object".into());
         return format!("List<{}>", item);
     }
@@ -2082,9 +2107,7 @@ class Solution {
 }"#;
         let output = JavaBackend.emit(&DartFrontend.parse(source)).code;
 
-        assert!(output.contains(
-            "new Solution().twoSum(new ArrayList<>(List.of(3, 4, 5, 6)), 7);"
-        ));
+        assert!(output.contains("new Solution().twoSum(new ArrayList<>(List.of(3, 4, 5, 6)), 7);"));
         assert!(output.contains("public static void main(String[] args)"));
         assert!(output.contains("import java.util.ArrayList;"));
         assert!(output.contains("import java.util.List;"));

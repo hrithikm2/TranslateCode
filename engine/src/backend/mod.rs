@@ -1,3 +1,4 @@
+pub mod dart;
 pub mod java;
 pub mod python;
 

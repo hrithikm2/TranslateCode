@@ -1,16 +1,23 @@
 use crate::backend::{Backend, BackendOutput};
 use crate::typed_ir::{
-    Body, BodyKind, ClassDeclaration, ClassMember, CompilationUnit, Declaration, Expression,
-    ExpressionKind, Literal, Parameter, Statement, StatementKind, TypeReference,
+    Argument, Body, BodyKind, ClassDeclaration, ClassMember, CollectionElement, CompilationUnit,
+    Declaration, Expression, ExpressionKind, FieldDeclaration, FunctionDeclaration, Literal,
+    Parameter, ParameterKind, Statement, StatementKind, StringPart, TypeReference,
 };
 
-/// Typed Dart-to-Python emitter.  This intentionally consumes the Tree-sitter IR rather than
-/// reparsing source lines: Dart's generic types and nested blocks must not be inferred from text.
+/// Emits valid Python from Universal IR. Source-language spellings are never copied for nodes
+/// that have structured IR because Dart named arguments, generics, closures, and `const` are not
+/// valid Python syntax.
 pub struct PythonBackend;
 
 impl Backend for PythonBackend {
     fn emit(&self, unit: &CompilationUnit) -> BackendOutput {
-        let mut sections = Vec::new();
+        let mut sections = vec![
+            "from __future__ import annotations".into(),
+            "from typing import Any, Final".into(),
+        ];
+        sections.extend(unit.imports.iter().map(emit_import));
+
         let mut entrypoint = None;
         for declaration in &unit.declarations {
             let rendered = match declaration {
@@ -20,55 +27,202 @@ impl Backend for PythonBackend {
                     continue;
                 }
                 Declaration::Function(value) => emit_function(value, false),
-                Declaration::Enum(value) => format!("class {}:\n    pass", value.name),
+                Declaration::Enum(value) => {
+                    let values = value
+                        .values
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| format!("    {} = {}", name, index))
+                        .collect::<Vec<_>>();
+                    format!(
+                        "class {}:\n{}",
+                        value.name,
+                        if values.is_empty() {
+                            "    pass".into()
+                        } else {
+                            values.join("\n")
+                        }
+                    )
+                }
                 Declaration::Extension(_) | Declaration::TypeAlias(_) => continue,
             };
-            if !rendered.is_empty() { sections.push(rendered); }
+            if !rendered.is_empty() {
+                sections.push(rendered);
+            }
         }
         if let Some(entrypoint) = entrypoint {
             sections.push(entrypoint);
             sections.push("if __name__ == \"__main__\":\n    main()".into());
         }
-        BackendOutput { code: sections.join("\n\n"), diagnostics: Vec::new() }
+        BackendOutput {
+            code: sections.join("\n\n"),
+            diagnostics: Vec::new(),
+        }
     }
+}
+
+fn emit_import(value: &crate::typed_ir::ImportDeclaration) -> String {
+    let module = python_module_name(&value.uri);
+    if value.show.is_empty() {
+        format!(
+            "import {}{}",
+            module,
+            value
+                .prefix
+                .as_ref()
+                .map(|prefix| format!(" as {}", prefix))
+                .unwrap_or_default()
+        )
+    } else {
+        format!("from {} import {}", module, value.show.join(", "))
+    }
+}
+
+fn python_module_name(uri: &str) -> String {
+    let value = uri
+        .trim()
+        .trim_end_matches(".dart")
+        .replace(':', ".")
+        .replace(['/', '-'], ".");
+    value
+        .split('.')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut result = part
+                .chars()
+                .map(|character| {
+                    if character.is_alphanumeric() || character == '_' {
+                        character
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>();
+            if result
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_digit())
+            {
+                result.insert(0, '_');
+            }
+            result
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 fn emit_class(class: &ClassDeclaration) -> String {
-    let mut members = Vec::new();
-    for member in &class.members {
-        match member {
-            ClassMember::Method(value) | ClassMember::Getter(value) | ClassMember::Setter(value) | ClassMember::Operator(value) => members.push(emit_function(value, !value.is_static)),
+    let bases = class
+        .extends
+        .iter()
+        .chain(&class.mixins)
+        .chain(&class.implements)
+        .map(emit_type)
+        .filter(|value| value != "Any")
+        .collect::<Vec<_>>();
+    let mut members = class
+        .members
+        .iter()
+        .filter_map(|member| match member {
+            ClassMember::Field(value) => Some(emit_field(value)),
+            ClassMember::Method(value)
+            | ClassMember::Getter(value)
+            | ClassMember::Setter(value)
+            | ClassMember::Operator(value) => Some(emit_function(value, !value.is_static)),
             ClassMember::Constructor(value) => {
-                let params = value.parameters.iter().map(emit_parameter).collect::<Vec<_>>();
-                let body = value.body.as_ref().map(emit_body).unwrap_or_default();
-                let body = if body.is_empty() { "pass".into() } else { body };
-                members.push(format!("    def __init__(self{}{}):\n{}", if params.is_empty() { "" } else { ", " }, params.join(", "), indent(&body, 2)));
+                let mut parameters = vec!["self".into()];
+                parameters.extend(value.parameters.iter().map(emit_parameter));
+                Some(format!(
+                    "def __init__({}):\n{}",
+                    parameters.join(", "),
+                    indent(&emit_body_or_pass(value.body.as_ref()), 1)
+                ))
             }
-            ClassMember::Field(_) | ClassMember::Unlowered { .. } => {}
-        }
+            ClassMember::Unlowered { .. } => None,
+        })
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if members.is_empty() {
+        members.push("pass".into());
     }
-    if members.is_empty() { members.push("    pass".into()); }
-    format!("class {}:\n{}", class.name, indent(&members.join("\n\n"), 1))
+    format!(
+        "class {}{}:\n{}",
+        class.name,
+        if bases.is_empty() {
+            String::new()
+        } else {
+            format!("({})", bases.join(", "))
+        },
+        indent(&members.join("\n\n"), 1)
+    )
 }
 
-fn emit_function(function: &crate::typed_ir::FunctionDeclaration, method: bool) -> String {
-    let mut params = Vec::new();
-    if method { params.push("self".into()); }
-    params.extend(function.parameters.iter().map(emit_parameter));
-    let body = function.body.as_ref().map(emit_body).unwrap_or_default();
-    let body = if body.is_empty() { "pass".into() } else { body };
-    format!("def {}({}) -> {}:\n{}", function.name, params.join(", "), emit_type(&function.return_type), indent(&body, 1))
+fn emit_field(field: &FieldDeclaration) -> String {
+    let value = field
+        .initializer
+        .as_ref()
+        .and_then(|body| match &body.kind {
+            BodyKind::Expression(value) => Some(emit_expression(value)),
+            _ => None,
+        })
+        .unwrap_or_else(|| "None".into());
+    format!("{}: {} = {}", field.name, emit_type(&field.type_ref), value)
+}
+
+fn emit_function(function: &FunctionDeclaration, method: bool) -> String {
+    let mut parameters = Vec::new();
+    if method {
+        parameters.push("self".into());
+    }
+    parameters.extend(function.parameters.iter().map(emit_parameter));
+    let return_type = if function.is_async
+        && function.return_type.name == "Future"
+        && function
+            .return_type
+            .arguments
+            .first()
+            .is_some_and(|value| value.name == "void")
+    {
+        "None".into()
+    } else {
+        emit_type(&function.return_type)
+    };
+    format!(
+        "{}def {}({}) -> {}:\n{}",
+        if function.is_async { "async " } else { "" },
+        function.name,
+        parameters.join(", "),
+        return_type,
+        indent(&emit_body_or_pass(function.body.as_ref()), 1)
+    )
 }
 
 fn emit_parameter(parameter: &Parameter) -> String {
-    let default = parameter.default_value.as_ref().map(|value| format!(" = {}", emit_expression(value))).unwrap_or_default();
-    format!("{}: {}{}", parameter.name, emit_type(&parameter.type_ref), default)
+    let default = parameter
+        .default_value
+        .as_ref()
+        .map(emit_expression)
+        .or_else(|| {
+            matches!(
+                parameter.kind,
+                ParameterKind::Named | ParameterKind::OptionalPositional
+            )
+            .then(|| "None".into())
+        });
+    format!(
+        "{}: {}{}",
+        parameter.name,
+        emit_type(&parameter.type_ref),
+        default
+            .map(|value| format!(" = {}", value))
+            .unwrap_or_default()
+    )
 }
 
 fn emit_type(reference: &TypeReference) -> String {
     let name = match reference.name.as_str() {
         "dynamic" | "Object" => "Any",
-        "void" => "None",
+        "void" | "Void" => "None",
         "String" => "str",
         "bool" => "bool",
         "int" => "int",
@@ -78,36 +232,132 @@ fn emit_type(reference: &TypeReference) -> String {
         "Map" => "dict",
         other => other,
     };
-    if reference.arguments.is_empty() { return name.into(); }
-    format!("{}[{}]", name, reference.arguments.iter().map(emit_type).collect::<Vec<_>>().join(", "))
+    let rendered = if reference.arguments.is_empty() {
+        name.into()
+    } else {
+        format!(
+            "{}[{}]",
+            name,
+            reference
+                .arguments
+                .iter()
+                .map(emit_type)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    if reference.nullable && rendered != "Any" && rendered != "None" {
+        format!("{} | None", rendered)
+    } else {
+        rendered
+    }
+}
+
+fn emit_body_or_pass(body: Option<&Body>) -> String {
+    let emitted = body.map(emit_body).unwrap_or_default();
+    if emitted.trim().is_empty() {
+        "pass".into()
+    } else {
+        emitted
+    }
 }
 
 fn emit_body(body: &Body) -> String {
     match &body.kind {
         BodyKind::Empty | BodyKind::Unlowered => String::new(),
         BodyKind::Expression(value) => format!("return {}", emit_expression(value)),
-        BodyKind::Block(values) => values.iter().map(emit_statement).collect::<Vec<_>>().join("\n"),
+        BodyKind::Block(values) => values
+            .iter()
+            .map(emit_statement)
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
 fn emit_statement(statement: &Statement) -> String {
     match &statement.kind {
-        StatementKind::Block(values) => values.iter().map(emit_statement).collect::<Vec<_>>().join("\n"),
-        StatementKind::Variable { name, type_ref, initializer, .. } => format!("{}: {}{}", name, emit_type(type_ref), initializer.as_ref().map(|value| format!(" = {}", emit_expression(value))).unwrap_or_default()),
+        StatementKind::Block(values) => values
+            .iter()
+            .map(emit_statement)
+            .filter(|value| !value.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        StatementKind::Variable {
+            name,
+            type_ref,
+            is_final,
+            initializer,
+        } => format!(
+            "{}: {} = {}",
+            name,
+            if *is_final {
+                format!("Final[{}]", emit_type(type_ref))
+            } else {
+                emit_type(type_ref)
+            },
+            initializer
+                .as_ref()
+                .map(emit_expression)
+                .unwrap_or_else(|| "None".into())
+        ),
         StatementKind::Expression(value) => emit_expression(value),
-        StatementKind::Return(value) => format!("return{}", value.as_ref().map(|value| format!(" {}", emit_expression(value))).unwrap_or_default()),
-        StatementKind::If { condition, then_branch, else_branch } => {
-            let then_text = indent(&emit_statement(then_branch), 1);
-            let suffix = else_branch.as_ref().map(|value| format!("\nelse:\n{}", indent(&emit_statement(value), 1))).unwrap_or_default();
-            format!("if {}:\n{}{}", emit_expression(condition), then_text, suffix)
+        StatementKind::Return(value) => format!(
+            "return{}",
+            value
+                .as_ref()
+                .map(|value| format!(" {}", emit_expression(value)))
+                .unwrap_or_default()
+        ),
+        StatementKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            let then_text = nonempty_statement(then_branch);
+            let suffix = else_branch
+                .as_ref()
+                .map(|value| format!("\nelse:\n{}", indent(&nonempty_statement(value), 1)))
+                .unwrap_or_default();
+            format!(
+                "if {}:\n{}{}",
+                emit_expression(condition),
+                indent(&then_text, 1),
+                suffix
+            )
         }
-        StatementKind::ForEach { variable, iterable, body } => format!("for {} in {}:\n{}", variable, emit_expression(iterable), indent(&emit_statement(body), 1)),
-        StatementKind::While { condition, body } => format!("while {}:\n{}", emit_expression(condition), indent(&emit_statement(body), 1)),
+        StatementKind::ForEach {
+            variable,
+            iterable,
+            body,
+        } => format!(
+            "for {} in {}:\n{}",
+            variable,
+            emit_expression(iterable),
+            indent(&nonempty_statement(body), 1)
+        ),
+        StatementKind::While { condition, body } => format!(
+            "while {}:\n{}",
+            emit_expression(condition),
+            indent(&nonempty_statement(body), 1)
+        ),
         StatementKind::Break => "break".into(),
         StatementKind::Continue => "continue".into(),
         StatementKind::Assert(value) => format!("assert {}", emit_expression(value)),
         StatementKind::Throw(value) => format!("raise {}", emit_expression(value)),
-        StatementKind::Unlowered { .. } | StatementKind::DoWhile { .. } | StatementKind::Switch { .. } | StatementKind::Try { .. } => "pass".into(),
+        StatementKind::DoWhile { .. }
+        | StatementKind::Switch { .. }
+        | StatementKind::Try { .. }
+        | StatementKind::Unlowered { .. } => String::new(),
+    }
+}
+
+fn nonempty_statement(statement: &Statement) -> String {
+    let value = emit_statement(statement);
+    if value.trim().is_empty() {
+        "pass".into()
+    } else {
+        value
     }
 }
 
@@ -115,13 +365,58 @@ fn emit_expression(expression: &Expression) -> String {
     match &expression.kind {
         ExpressionKind::Identifier(value) => value.clone(),
         ExpressionKind::Literal(Literal::Null) => "None".into(),
-        ExpressionKind::Literal(Literal::Bool(value)) => value.to_string().to_uppercase(),
-        ExpressionKind::Literal(Literal::Integer(value) | Literal::Float(value) | Literal::String(value) | Literal::Symbol(value)) => value.clone(),
-        ExpressionKind::StringInterpolation(parts) => format!("f\"{}\"", parts.iter().map(|part| match part { crate::typed_ir::StringPart::Text(value) => value.clone(), crate::typed_ir::StringPart::Expression(value) => format!("{{{}}}", emit_expression(value)) }).collect::<String>()),
-        ExpressionKind::Binary { operator, left, right } => format!("{} {} {}", emit_expression(left), match operator.as_str() { "&&" => "and", "||" => "or", "??" => "or", other => other }, emit_expression(right)),
-        ExpressionKind::Unary { operator, operand } => format!("{}{}", if operator == "!" { "not " } else { operator }, emit_expression(operand)),
-        ExpressionKind::Assignment { target, operator, value } => format!("{} {} {}", emit_expression(target), operator, emit_expression(value)),
-        ExpressionKind::Member { object, property, .. } => {
+        ExpressionKind::Literal(Literal::Bool(value)) => {
+            if *value { "True" } else { "False" }.into()
+        }
+        ExpressionKind::Literal(
+            Literal::Integer(value)
+            | Literal::Float(value)
+            | Literal::String(value)
+            | Literal::Symbol(value),
+        ) => value.clone(),
+        ExpressionKind::StringInterpolation(parts) => format!(
+            "f\"{}\"",
+            parts
+                .iter()
+                .map(|part| match part {
+                    StringPart::Text(value) => value.replace('"', "\\\""),
+                    StringPart::Expression(value) => format!("{{{}}}", emit_expression(value)),
+                })
+                .collect::<String>()
+        ),
+        ExpressionKind::Binary {
+            operator,
+            left,
+            right,
+        } => format!(
+            "{} {} {}",
+            emit_expression(left),
+            match operator.as_str() {
+                "&&" => "and",
+                "||" => "or",
+                "??" => "or",
+                other => other,
+            },
+            emit_expression(right)
+        ),
+        ExpressionKind::Unary { operator, operand } => format!(
+            "{}{}",
+            if operator == "!" { "not " } else { operator },
+            emit_expression(operand)
+        ),
+        ExpressionKind::Assignment {
+            target,
+            operator,
+            value,
+        } => format!(
+            "{} {} {}",
+            emit_expression(target),
+            operator,
+            emit_expression(value)
+        ),
+        ExpressionKind::Member {
+            object, property, ..
+        } => {
             let object = emit_expression(object);
             match property.as_str() {
                 "isEmpty" => format!("len({}) == 0", object),
@@ -131,23 +426,208 @@ fn emit_expression(expression: &Expression) -> String {
                 _ => format!("{}.{}", object, property),
             }
         }
-        ExpressionKind::Index { object, index, .. } => format!("{}[{}]", emit_expression(object), emit_expression(index)),
-        ExpressionKind::Call { .. } => emit_source_expression(&expression.source),
-        ExpressionKind::ObjectCreation { .. } => emit_source_expression(&expression.source),
-        ExpressionKind::ListLiteral { elements, .. } => format!("[{}]", elements.iter().map(|value| match value { crate::typed_ir::CollectionElement::Expression(value) => emit_expression(value), crate::typed_ir::CollectionElement::Spread { expression, .. } => format!("*{}", emit_expression(expression)) }).collect::<Vec<_>>().join(", ")),
-        ExpressionKind::MapLiteral { entries, .. } => format!("{{{}}}", entries.iter().map(|(key, value)| format!("{}: {}", emit_expression(key), emit_expression(value))).collect::<Vec<_>>().join(", ")),
-        ExpressionKind::IfNull { left, right } => format!("({} if {} is not None else {})", emit_expression(left), emit_expression(left), emit_expression(right)),
-        ExpressionKind::Await(value) => emit_expression(value),
-        ExpressionKind::Cast { expression, .. } | ExpressionKind::TypeTest { expression, .. } => emit_expression(expression),
-        ExpressionKind::Raw { .. } | ExpressionKind::Closure { .. } | ExpressionKind::Cascade { .. } | ExpressionKind::Switch { .. } => expression.source.clone(),
+        ExpressionKind::Index { object, index, .. } => {
+            format!("{}[{}]", emit_expression(object), emit_expression(index))
+        }
+        ExpressionKind::Call {
+            callee,
+            arguments,
+            type_arguments,
+        } => format!(
+            "{}{}({})",
+            emit_expression(callee),
+            if type_arguments.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "[{}]",
+                    type_arguments
+                        .iter()
+                        .map(emit_type_name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            },
+            emit_arguments(arguments)
+        ),
+        ExpressionKind::ObjectCreation {
+            type_ref,
+            constructor,
+            arguments,
+            ..
+        } => format!(
+            "{}{}({})",
+            emit_type_name(type_ref),
+            constructor
+                .as_ref()
+                .map(|value| format!(".{}", value))
+                .unwrap_or_default(),
+            emit_arguments(arguments)
+        ),
+        ExpressionKind::ListLiteral { elements, .. } => format!(
+            "[{}]",
+            elements
+                .iter()
+                .map(|value| match value {
+                    CollectionElement::Expression(value) => emit_expression(value),
+                    CollectionElement::Spread { expression, .. } => {
+                        format!("*{}", emit_expression(expression))
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ExpressionKind::MapLiteral { entries, .. } => format!(
+            "{{{}}}",
+            entries
+                .iter()
+                .map(|(key, value)| {
+                    format!("{}: {}", emit_expression(key), emit_expression(value))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        ExpressionKind::Closure { parameters, body } => emit_closure(parameters, body),
+        ExpressionKind::IfNull { left, right } => format!(
+            "({} if {} is not None else {})",
+            emit_expression(left),
+            emit_expression(left),
+            emit_expression(right)
+        ),
+        ExpressionKind::Await(value) => format!("await {}", emit_expression(value)),
+        ExpressionKind::Cast { expression, .. } => emit_expression(expression),
+        ExpressionKind::TypeTest {
+            expression,
+            type_ref,
+            negated,
+        } => format!(
+            "{}isinstance({}, {})",
+            if *negated { "not " } else { "" },
+            emit_expression(expression),
+            emit_type_name(type_ref)
+        ),
+        ExpressionKind::Cascade { target, .. } => emit_expression(target),
+        ExpressionKind::Switch { .. } | ExpressionKind::Raw { .. } => expression.source.clone(),
     }
 }
 
-fn emit_source_expression(source: &str) -> String {
-    source.trim().trim_end_matches(';').replace("true", "True").replace("false", "False").replace("null", "None")
+fn emit_arguments(arguments: &[Argument]) -> String {
+    arguments
+        .iter()
+        .map(|argument| {
+            let value = emit_expression(&argument.value);
+            argument
+                .name
+                .as_ref()
+                .map(|name| format!("{}={}", name, value))
+                .unwrap_or(value)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn emit_type_name(reference: &TypeReference) -> String {
+    match reference.name.as_str() {
+        "List" => "list".into(),
+        "Map" => "dict".into(),
+        "Set" => "set".into(),
+        other => other.into(),
+    }
+}
+
+fn emit_closure(parameters: &[Parameter], body: &Body) -> String {
+    let mut rendered_parameters = parameters
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let captures = match &body.kind {
+        BodyKind::Block(statements) => statements
+            .iter()
+            .filter_map(|statement| match &statement.kind {
+                StatementKind::Variable {
+                    name,
+                    initializer: Some(value),
+                    ..
+                } => Some(format!("{}={}", name, emit_expression(value))),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    if !captures.is_empty() {
+        if !rendered_parameters.is_empty() {
+            rendered_parameters.push_str(", ");
+        }
+        rendered_parameters.push_str(&captures.join(", "));
+    }
+    let value = match &body.kind {
+        BodyKind::Expression(value) => emit_expression(value),
+        BodyKind::Block(statements) => {
+            let values = statements
+                .iter()
+                .filter_map(closure_statement_expression)
+                .collect::<Vec<_>>();
+            match values.as_slice() {
+                [] => "None".into(),
+                [value] => value.clone(),
+                _ => format!("({})[-1]", values.join(", ")),
+            }
+        }
+        BodyKind::Empty | BodyKind::Unlowered => "None".into(),
+    };
+    format!("lambda {}: {}", rendered_parameters, value)
+}
+
+fn closure_statement_expression(statement: &Statement) -> Option<String> {
+    match &statement.kind {
+        StatementKind::Expression(value) | StatementKind::Return(Some(value)) => {
+            Some(emit_expression(value))
+        }
+        StatementKind::Block(values) => values.iter().rev().find_map(closure_statement_expression),
+        _ => None,
+    }
 }
 
 fn indent(value: &str, level: usize) -> String {
     let prefix = "    ".repeat(level);
-    value.lines().map(|line| format!("{}{}", prefix, line)).collect::<Vec<_>>().join("\n")
+    value
+        .lines()
+        .map(|line| format!("{}{}", prefix, line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frontend::dart::DartFrontend;
+    use crate::frontend::Frontend;
+
+    #[test]
+    fn emits_structured_dart_calls_as_valid_python() {
+        let source = r#"
+Future<void> initialize() async {
+  final dio = Dio(BaseOptions(baseUrl: AppConstants.baseUrl));
+  await Get.put<NewsRepository>(NewsRepositoryImpl(remote: dio));
+}
+"#;
+        let output = PythonBackend.emit(&DartFrontend.parse(source)).code;
+        assert!(
+            output.contains("async def initialize() -> None:"),
+            "{}",
+            output
+        );
+        assert!(
+            output.contains("Dio(BaseOptions(baseUrl=AppConstants.baseUrl))"),
+            "{}",
+            output
+        );
+        assert!(
+            output.contains("await Get.put[NewsRepository](NewsRepositoryImpl(remote=dio))"),
+            "{}",
+            output
+        );
+        assert!(!output.contains("<NewsRepository>"), "{}", output);
+    }
 }

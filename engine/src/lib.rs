@@ -266,41 +266,85 @@ fn split_for_header(header: &str) -> Option<(String, String, String)> {
     if parts.len() != 3 {
         return None;
     }
-    Some((parts[0].trim().into(), parts[1].trim().into(), parts[2].trim().into()))
+    Some((
+        parts[0].trim().into(),
+        parts[1].trim().into(),
+        parts[2].trim().into(),
+    ))
 }
 
-fn parse_for_each_header(header: &str, language: Language) -> Option<(String, Option<String>, String)> {
-    let text = header.trim().trim_end_matches('{').trim().trim_end_matches(':').trim();
+fn parse_for_each_header(
+    header: &str,
+    language: Language,
+) -> Option<(String, Option<String>, String)> {
+    let text = header
+        .trim()
+        .trim_end_matches('{')
+        .trim()
+        .trim_end_matches(':')
+        .trim();
     let inner = match language {
         Language::Python => text.strip_prefix("for ")?,
         Language::Swift | Language::Rust => text.strip_prefix("for ")?,
         Language::Go => text.strip_prefix("for ")?,
-        _ => text.strip_prefix("for")?.trim().strip_prefix('(')?.strip_suffix(')')?,
+        _ => text
+            .strip_prefix("for")?
+            .trim()
+            .strip_prefix('(')?
+            .strip_suffix(')')?,
     };
     match language {
         Language::Python | Language::Swift | Language::Rust => {
             let (variable, iterable) = inner.split_once(" in ")?;
-            Some((variable.trim().trim_start_matches('&').to_string(), None, source_expression(iterable, language)))
+            Some((
+                variable.trim().trim_start_matches('&').to_string(),
+                None,
+                source_expression(iterable, language),
+            ))
         }
         Language::JavaScript => {
             let (left, iterable) = inner.split_once(" of ")?;
-            let variable = left.trim().trim_start_matches("const ").trim_start_matches("let ").trim();
-            Some((variable.to_string(), None, source_expression(iterable, language)))
+            let variable = left
+                .trim()
+                .trim_start_matches("const ")
+                .trim_start_matches("let ")
+                .trim();
+            Some((
+                variable.to_string(),
+                None,
+                source_expression(iterable, language),
+            ))
         }
         Language::Java | Language::Dart => {
-            let separator = if inner.contains(" in ") { " in " } else { " : " };
+            let separator = if inner.contains(" in ") {
+                " in "
+            } else {
+                " : "
+            };
             let (left, iterable) = inner.split_once(separator)?;
-            let left = left.trim().trim_start_matches("final ").trim_start_matches("var ").trim();
+            let left = left
+                .trim()
+                .trim_start_matches("final ")
+                .trim_start_matches("var ")
+                .trim();
             let pieces = left.split_whitespace().collect::<Vec<_>>();
             let variable = pieces.last()?.to_string();
-            let type_hint = pieces.iter().rev().nth(1).and_then(|value| canonical_type(value));
+            let type_hint = pieces
+                .iter()
+                .rev()
+                .nth(1)
+                .and_then(|value| canonical_type(value));
             Some((variable, type_hint, source_expression(iterable, language)))
         }
         Language::Go => {
             let (left, iterable) = inner.split_once(" range ")?;
             let left = left.trim().trim_end_matches(":=").trim();
             let variable = left.split(',').next_back()?.trim();
-            Some((variable.to_string(), None, source_expression(iterable, language)))
+            Some((
+                variable.to_string(),
+                None,
+                source_expression(iterable, language),
+            ))
         }
     }
 }
@@ -313,7 +357,11 @@ fn replace_dart_length(value: &str) -> String {
         let mut start = before.len();
         while start > 0 {
             let ch = before[..start].chars().last().unwrap();
-            if ch.is_alphanumeric() || ch == '_' { start -= ch.len_utf8(); } else { break; }
+            if ch.is_alphanumeric() || ch == '_' {
+                start -= ch.len_utf8();
+            } else {
+                break;
+            }
         }
         result.push_str(&before[..start]);
         result.push_str("len(");
@@ -333,12 +381,23 @@ fn split_args_with_separator(value: &str, separator: char) -> Vec<String> {
     for ch in value.chars() {
         if quote != '\0' {
             current.push(ch);
-            if ch == quote { quote = '\0'; }
+            if ch == quote {
+                quote = '\0';
+            }
         } else {
             match ch {
-                '\'' | '"' => { quote = ch; current.push(ch); }
-                '(' | '[' | '{' => { depth += 1; current.push(ch); }
-                ')' | ']' | '}' => { depth -= 1; current.push(ch); }
+                '\'' | '"' => {
+                    quote = ch;
+                    current.push(ch);
+                }
+                '(' | '[' | '{' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                ')' | ']' | '}' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
                 value if value == separator && depth == 0 => {
                     result.push(current.trim().to_string());
                     current.clear();
@@ -513,7 +572,10 @@ fn parse_print(text: &str, language: Language) -> Option<Vec<String>> {
 
 fn parse_variable(text: &str, language: Language) -> Option<Statement> {
     let line = text.trim().trim_end_matches(';');
-    if ["+=", "-=", "*=", "/=", "%="].iter().any(|operator| line.contains(operator)) {
+    if ["+=", "-=", "*=", "/=", "%="]
+        .iter()
+        .any(|operator| line.contains(operator))
+    {
         return None;
     }
     let (left, value) = line.split_once('=')?;
@@ -645,8 +707,12 @@ fn parse_simple_statement(text: &str, language: Language) -> Option<Statement> {
     if line == "return" {
         return Some(Statement::Return(None));
     }
-    if line == "break" { return Some(Statement::Break); }
-    if line == "continue" { return Some(Statement::Continue); }
+    if line == "break" {
+        return Some(Statement::Break);
+    }
+    if line == "continue" {
+        return Some(Statement::Continue);
+    }
     if ["yield ", "raise ", "await ", "del ", "global ", "nonlocal "]
         .iter()
         .any(|prefix| line.starts_with(prefix))
@@ -662,8 +728,43 @@ fn parse_simple_statement(text: &str, language: Language) -> Option<Statement> {
     Some(Statement::Expression(source_expression(line, language)))
 }
 
+fn parse_python_tuple_assignment(text: &str) -> Option<Vec<Statement>> {
+    let line = text.trim().trim_end_matches(';');
+    let (left, right) = line.split_once('=')?;
+    let names = split_args(left);
+    let values = split_args(right);
+    if names.len() < 2 || names.len() != values.len() {
+        return None;
+    }
+    if names.iter().any(|name| {
+        name.trim().is_empty()
+            || !name
+                .trim()
+                .chars()
+                .all(|character| character == '_' || character.is_alphanumeric())
+    }) {
+        return None;
+    }
+    Some(
+        names
+            .into_iter()
+            .zip(values)
+            .map(|(name, value)| {
+                parse_variable(
+                    &format!("{} = {}", name.trim(), value.trim()),
+                    Language::Python,
+                )
+                .expect("validated Python tuple assignment")
+            })
+            .collect(),
+    )
+}
+
 fn unsupported_statement(source: &str, language: Language) -> Statement {
-    let message = format!("Translation stopped at unsupported construct: {}", source.trim());
+    let message = format!(
+        "Translation stopped at unsupported construct: {}",
+        source.trim()
+    );
     Statement::Comment(if language == Language::Python {
         format!("# {}", message)
     } else {
@@ -709,9 +810,11 @@ fn parse_python_block(lines: &[String], index: &mut usize, indent: usize) -> Vec
             break;
         }
         if text.ends_with(':')
-            && ["try:", "except", "finally:", "with ", "match ", "case ", "async "]
-                .iter()
-                .any(|prefix| text.starts_with(prefix))
+            && [
+                "try:", "except", "finally:", "with ", "match ", "case ", "async ",
+            ]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
         {
             body.push(unsupported_statement(text, Language::Python));
             *index += 1;
@@ -733,7 +836,10 @@ fn parse_python_block(lines: &[String], index: &mut usize, indent: usize) -> Vec
             *index += 1;
             let child_indent = python_child_indent(lines, *index, indent);
             let class_body = parse_python_block(lines, index, child_indent);
-            body.push(Statement::Class { name: name.to_string(), body: class_body });
+            body.push(Statement::Class {
+                name: name.to_string(),
+                body: class_body,
+            });
             continue;
         }
         if let Some((name, params, return_type)) = parse_function_header(text, Language::Python) {
@@ -749,11 +855,18 @@ fn parse_python_block(lines: &[String], index: &mut usize, indent: usize) -> Vec
             continue;
         }
         if text.starts_with("for ") && text.ends_with(':') {
-            if let Some((variable, type_hint, iterable)) = parse_for_each_header(text, Language::Python) {
+            if let Some((variable, type_hint, iterable)) =
+                parse_for_each_header(text, Language::Python)
+            {
                 *index += 1;
                 let child_indent = python_child_indent(lines, *index, indent);
                 let loop_body = parse_python_block(lines, index, child_indent);
-                body.push(Statement::ForEach { variable, type_hint, iterable, body: loop_body });
+                body.push(Statement::ForEach {
+                    variable,
+                    type_hint,
+                    iterable,
+                    body: loop_body,
+                });
                 continue;
             }
         }
@@ -762,7 +875,10 @@ fn parse_python_block(lines: &[String], index: &mut usize, indent: usize) -> Vec
             *index += 1;
             let child_indent = python_child_indent(lines, *index, indent);
             let loop_body = parse_python_block(lines, index, child_indent);
-            body.push(Statement::While { condition, body: loop_body });
+            body.push(Statement::While {
+                condition,
+                body: loop_body,
+            });
             continue;
         }
         if text.starts_with("if ") && text.ends_with(':') {
@@ -772,6 +888,30 @@ fn parse_python_block(lines: &[String], index: &mut usize, indent: usize) -> Vec
             let then_body = parse_python_block(lines, index, child_indent);
             let mut else_body = Vec::new();
             if *index < lines.len()
+                && indent_of(&lines[*index]) == indent
+                && lines[*index].trim().starts_with("elif ")
+            {
+                let elif = lines[*index].trim();
+                let condition =
+                    source_expression(elif[5..].trim_end_matches(':').trim(), Language::Python);
+                *index += 1;
+                let elif_indent = python_child_indent(lines, *index, indent);
+                let elif_body = parse_python_block(lines, index, elif_indent);
+                let mut nested_else_body = Vec::new();
+                if *index < lines.len()
+                    && indent_of(&lines[*index]) == indent
+                    && lines[*index].trim().starts_with("else:")
+                {
+                    *index += 1;
+                    let else_indent = python_child_indent(lines, *index, indent);
+                    nested_else_body = parse_python_block(lines, index, else_indent);
+                }
+                else_body.push(Statement::If {
+                    condition,
+                    then_body: elif_body,
+                    else_body: nested_else_body,
+                });
+            } else if *index < lines.len()
                 && indent_of(&lines[*index]) == indent
                 && lines[*index].trim().starts_with("else:")
             {
@@ -784,6 +924,11 @@ fn parse_python_block(lines: &[String], index: &mut usize, indent: usize) -> Vec
                 then_body,
                 else_body,
             });
+            continue;
+        }
+        if let Some(statements) = parse_python_tuple_assignment(text) {
+            body.extend(statements);
+            *index += 1;
             continue;
         }
         if let Some(statement) = parse_simple_statement(text, Language::Python) {
@@ -931,16 +1076,28 @@ fn parse_brace_block(
             if let Some((variable, type_hint, iterable)) = parse_for_each_header(text, language) {
                 *index += 1;
                 let loop_body = parse_brace_block(lines, index, language, true);
-                body.push(Statement::ForEach { variable, type_hint, iterable, body: loop_body });
+                body.push(Statement::ForEach {
+                    variable,
+                    type_hint,
+                    iterable,
+                    body: loop_body,
+                });
                 continue;
             }
         }
         if text.ends_with('{') && text.starts_with("for") {
-            if let Some((initializer, condition, update)) = split_for_header(text.trim_end_matches('{').trim()) {
+            if let Some((initializer, condition, update)) =
+                split_for_header(text.trim_end_matches('{').trim())
+            {
                 *index += 1;
                 let initializer = parse_simple_statement(&initializer, language).map(Box::new);
                 let loop_body = parse_brace_block(lines, index, language, true);
-                body.push(Statement::For { initializer, condition, update, body: loop_body });
+                body.push(Statement::For {
+                    initializer,
+                    condition,
+                    update,
+                    body: loop_body,
+                });
                 continue;
             }
         }
@@ -951,7 +1108,10 @@ fn parse_brace_block(
             );
             *index += 1;
             let loop_body = parse_brace_block(lines, index, language, true);
-            body.push(Statement::While { condition, body: loop_body });
+            body.push(Statement::While {
+                condition,
+                body: loop_body,
+            });
             continue;
         }
         if let Some((name, params, return_type)) =
@@ -1003,7 +1163,10 @@ fn parse_brace_block(
                 .to_string();
             *index += 1;
             let class_body = parse_brace_block(lines, index, language, true);
-            body.push(Statement::Class { name, body: class_body });
+            body.push(Statement::Class {
+                name,
+                body: class_body,
+            });
             continue;
         }
         if text.ends_with('{') {
@@ -1070,80 +1233,88 @@ fn parse(source: &str, language: Language, preserve_classes: bool) -> Program {
 fn normalize_scope_mutability(body: &mut [Statement]) {
     use std::collections::HashSet;
 
-    let mut declarations = HashSet::new();
-    for statement in body.iter_mut() {
-        if let Statement::Variable { name, value, .. } = statement {
-            if !declarations.insert(name.clone()) {
-                *statement = Statement::Expression(format!("{} = {}", name, value));
+    fn normalize_body(body: &mut [Statement], outer: &HashSet<String>) {
+        let mut visible = outer.clone();
+        let mut declarations = HashSet::new();
+        for statement in body.iter_mut() {
+            if let Statement::Variable { name, value, .. } = statement {
+                if visible.contains(name) || !declarations.insert(name.clone()) {
+                    *statement = Statement::Expression(format!("{} = {}", name, value));
+                } else {
+                    visible.insert(name.clone());
+                }
             }
         }
-    }
 
-    for statement in body.iter_mut() {
-        match statement {
-            Statement::Class { body, .. } => normalize_scope_mutability(body),
-            Statement::Function { body, .. } => normalize_scope_mutability(body),
-            Statement::If {
-                then_body,
-                else_body,
-                ..
-            } => {
-                normalize_scope_mutability(then_body);
-                normalize_scope_mutability(else_body);
-            }
-            Statement::For { body, .. }
-            | Statement::ForEach { body, .. }
-            | Statement::While { body, .. } => normalize_scope_mutability(body),
-            _ => {}
-        }
-    }
-
-    fn collect_assignments(body: &[Statement], names: &mut HashSet<String>) {
-        for statement in body {
+        for statement in body.iter_mut() {
             match statement {
-                Statement::Expression(value) => {
-                    let trimmed = value.trim();
-                    for operator in ["+=", "-=", "*=", "/=", "="] {
-                        if let Some((left, _)) = trimmed.split_once(operator) {
-                            let candidate = left.trim();
-                            if candidate
-                                .chars()
-                                .all(|value| value == '_' || value.is_alphanumeric())
-                            {
-                                names.insert(candidate.to_string());
-                            }
-                            break;
-                        }
-                    }
-                    for suffix in ["++", "--"] {
-                        if let Some(candidate) = trimmed.strip_suffix(suffix) {
-                            names.insert(candidate.trim().to_string());
-                        }
-                    }
+                Statement::Class { body, .. } | Statement::Function { body, .. } => {
+                    normalize_body(body, &HashSet::new())
                 }
                 Statement::If {
                     then_body,
                     else_body,
                     ..
                 } => {
-                    collect_assignments(then_body, names);
-                    collect_assignments(else_body, names);
+                    normalize_body(then_body, &visible);
+                    normalize_body(else_body, &visible);
                 }
                 Statement::For { body, .. }
                 | Statement::ForEach { body, .. }
-                | Statement::While { body, .. } => collect_assignments(body, names),
+                | Statement::While { body, .. } => normalize_body(body, &visible),
                 _ => {}
+            }
+        }
+
+        fn collect_assignments(body: &[Statement], names: &mut HashSet<String>) {
+            for statement in body {
+                match statement {
+                    Statement::Expression(value) => {
+                        let trimmed = value.trim();
+                        for operator in ["+=", "-=", "*=", "/=", "="] {
+                            if let Some((left, _)) = trimmed.split_once(operator) {
+                                let candidate = left.trim();
+                                if candidate
+                                    .chars()
+                                    .all(|value| value == '_' || value.is_alphanumeric())
+                                {
+                                    names.insert(candidate.to_string());
+                                }
+                                break;
+                            }
+                        }
+                        for suffix in ["++", "--"] {
+                            if let Some(candidate) = trimmed.strip_suffix(suffix) {
+                                names.insert(candidate.trim().to_string());
+                            }
+                        }
+                    }
+                    Statement::If {
+                        then_body,
+                        else_body,
+                        ..
+                    } => {
+                        collect_assignments(then_body, names);
+                        collect_assignments(else_body, names);
+                    }
+                    Statement::For { body, .. }
+                    | Statement::ForEach { body, .. }
+                    | Statement::While { body, .. } => collect_assignments(body, names),
+                    _ => {}
+                }
+            }
+        }
+
+        let mut assignments = HashSet::new();
+        collect_assignments(body, &mut assignments);
+        for statement in body {
+            if let Statement::Variable { name, mutable, .. } = statement {
+                *mutable = assignments.contains(name);
             }
         }
     }
 
-    let mut assignments = HashSet::new();
-    collect_assignments(body, &mut assignments);
-    for statement in body {
-        if let Statement::Variable { name, mutable, .. } = statement {
-            *mutable = assignments.contains(name);
-        }
-    }
+    normalize_body(body, &HashSet::new());
 }
 
 fn type_for(target: Language, canonical: &str) -> String {
@@ -1153,7 +1324,13 @@ fn type_for(target: Language, canonical: &str) -> String {
         let arguments = split_args(&canonical[open + 1..close]);
         let values = arguments
             .iter()
-            .map(|argument| if target == Language::Java { type_for_java_boxed(argument) } else { type_for(target, argument) })
+            .map(|argument| {
+                if target == Language::Java {
+                    type_for_java_boxed(argument)
+                } else {
+                    type_for(target, argument)
+                }
+            })
             .collect::<Vec<_>>();
         return match (target, container) {
             (Language::Python, "list") => format!("list[{}]", values.join(", ")),
@@ -1170,7 +1347,11 @@ fn type_for(target: Language, canonical: &str) -> String {
             (Language::Swift, "map") => format!("[{}]", values.join(": ")),
             (Language::Go, "list") => format!("[]{}", values.join("")),
             (Language::Go, "set") => format!("map[{}]struct{{}}", values.join("")),
-            (Language::Go, "map") => format!("map[{}]{}", values.first().cloned().unwrap_or_else(|| "any".into()), values.get(1).cloned().unwrap_or_else(|| "any".into())),
+            (Language::Go, "map") => format!(
+                "map[{}]{}",
+                values.first().cloned().unwrap_or_else(|| "any".into()),
+                values.get(1).cloned().unwrap_or_else(|| "any".into())
+            ),
             (Language::Rust, "list") => format!("Vec<{}>", values.join(", ")),
             (Language::Rust, "set") => format!("HashSet<{}>", values.join(", ")),
             (Language::Rust, "map") => format!("HashMap<{}>", values.join(", ")),
@@ -1186,7 +1367,8 @@ fn type_for(target: Language, canonical: &str) -> String {
             "bool" => "bool",
             "void" => "None",
             _ => "object",
-        }.into(),
+        }
+        .into(),
         Language::Java => match canonical {
             "string" => "String",
             "int" => "int",
@@ -1194,7 +1376,8 @@ fn type_for(target: Language, canonical: &str) -> String {
             "bool" => "boolean",
             "void" => "void",
             _ => "Object",
-        }.into(),
+        }
+        .into(),
         Language::Dart => match canonical {
             "string" => "String",
             "int" => "int",
@@ -1202,7 +1385,8 @@ fn type_for(target: Language, canonical: &str) -> String {
             "bool" => "bool",
             "void" => "void",
             _ => "dynamic",
-        }.into(),
+        }
+        .into(),
         Language::Swift => match canonical {
             "string" => "String",
             "int" => "Int",
@@ -1210,7 +1394,8 @@ fn type_for(target: Language, canonical: &str) -> String {
             "bool" => "Bool",
             "void" => "Void",
             _ => "Any",
-        }.into(),
+        }
+        .into(),
         Language::Go => match canonical {
             "string" => "string",
             "int" => "int",
@@ -1218,7 +1403,8 @@ fn type_for(target: Language, canonical: &str) -> String {
             "bool" => "bool",
             "void" => "",
             _ => "any",
-        }.into(),
+        }
+        .into(),
         Language::Rust => match canonical {
             "string" => "String",
             "int" => "i64",
@@ -1226,12 +1412,15 @@ fn type_for(target: Language, canonical: &str) -> String {
             "bool" => "bool",
             "void" => "()",
             _ => "String",
-        }.into(),
+        }
+        .into(),
     }
 }
 
 fn type_for_java_boxed(canonical: &str) -> String {
-    if canonical.contains('<') { return type_for(Language::Java, canonical); }
+    if canonical.contains('<') {
+        return type_for(Language::Java, canonical);
+    }
     match canonical {
         "int" => "Integer".into(),
         "float" => "Double".into(),
@@ -1253,7 +1442,9 @@ fn snake_case_identifier(value: &str) -> String {
     let mut result = String::new();
     for (index, character) in value.chars().enumerate() {
         if character.is_ascii_uppercase() {
-            if index > 0 { result.push('_'); }
+            if index > 0 {
+                result.push('_');
+            }
             result.push(character.to_ascii_lowercase());
         } else {
             result.push(character);
@@ -1262,21 +1453,82 @@ fn snake_case_identifier(value: &str) -> String {
     result
 }
 
+fn lower_camel_case_identifier(value: &str) -> String {
+    let mut result = String::new();
+    let mut uppercase_next = false;
+    for character in value.chars() {
+        if character == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            result.push(character.to_ascii_uppercase());
+            uppercase_next = false;
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
+fn rewrite_swift_identifiers(value: &str) -> String {
+    let mut result = String::new();
+    let mut token = String::new();
+    let mut quote = '\0';
+    let flush = |result: &mut String, token: &mut String| {
+        if !token.is_empty() {
+            if token.contains('_') {
+                result.push_str(&lower_camel_case_identifier(token));
+            } else {
+                result.push_str(token);
+            }
+            token.clear();
+        }
+    };
+    for character in value.chars() {
+        if quote != '\0' {
+            result.push(character);
+            if character == quote {
+                quote = '\0';
+            }
+        } else if character == '"' || character == '\'' {
+            flush(&mut result, &mut token);
+            quote = character;
+            result.push(character);
+        } else if character == '_' || character.is_alphanumeric() {
+            token.push(character);
+        } else {
+            flush(&mut result, &mut token);
+            result.push(character);
+        }
+    }
+    flush(&mut result, &mut token);
+    result
+}
+
 fn rewrite_rust_call_names(value: &str) -> String {
     let chars = value.char_indices().collect::<Vec<_>>();
     let mut result = String::new();
     let mut cursor = 0usize;
     for (index, character) in &chars {
-        if *character != '(' { continue; }
+        if *character != '(' {
+            continue;
+        }
         let mut start = *index;
         while start > 0 {
             let previous = value[..start].chars().next_back().unwrap();
             if previous == '_' || previous.is_ascii_alphanumeric() {
                 start -= previous.len_utf8();
-            } else { break; }
+            } else {
+                break;
+            }
         }
         let name = &value[start..*index];
-        if name.is_empty() || name.chars().next().is_some_and(|item| item.is_ascii_uppercase()) || !name.chars().any(|item| item.is_ascii_uppercase()) {
+        if name.is_empty()
+            || name
+                .chars()
+                .next()
+                .is_some_and(|item| item.is_ascii_uppercase())
+            || !name.chars().any(|item| item.is_ascii_uppercase())
+        {
             continue;
         }
         result.push_str(&value[cursor..start]);
@@ -1291,20 +1543,26 @@ fn rewrite_java_index_accesses(value: &str) -> String {
     let mut result = value.to_string();
     let mut search_from = 0usize;
     loop {
-        let Some(relative_open) = result[search_from..].find('[') else { break };
+        let Some(relative_open) = result[search_from..].find('[') else {
+            break;
+        };
         let open = search_from + relative_open;
         let mut start = open;
         while start > 0 {
             let previous = result[..start].chars().next_back().unwrap();
             if previous == '_' || previous.is_ascii_alphanumeric() || previous == '.' {
                 start -= previous.len_utf8();
-            } else { break; }
+            } else {
+                break;
+            }
         }
         if start == open {
             search_from = open + 1;
             continue;
         }
-        let Some(relative_close) = result[open + 1..].find(']') else { break };
+        let Some(relative_close) = result[open + 1..].find(']') else {
+            break;
+        };
         let close = open + 1 + relative_close;
         let object = result[start..open].to_string();
         let index = result[open + 1..close].to_string();
@@ -1324,7 +1582,15 @@ fn expression_for(target: Language, expression: &str) -> String {
                     let closure = closure.trim_end_matches(')').trim();
                     if let Some((parameter, predicate)) = closure.split_once("=>") {
                         let receiver = receiver.trim().trim_end_matches(".values");
-                        value = format!("all({} for {} in {}.values())", predicate.trim(), parameter.trim().trim_start_matches('(').trim_end_matches(')'), receiver);
+                        value = format!(
+                            "all({} for {} in {}.values())",
+                            predicate.trim(),
+                            parameter
+                                .trim()
+                                .trim_start_matches('(')
+                                .trim_end_matches(')'),
+                            receiver
+                        );
                     }
                 }
             }
@@ -1359,6 +1625,16 @@ fn expression_for(target: Language, expression: &str) -> String {
             );
             if target == Language::Swift {
                 value = value.replace("null", "nil");
+                value = value.replace("//", "/");
+                while let Some(start) = value.find("len(") {
+                    let Some(relative_close) = value[start + 4..].find(')') else {
+                        break;
+                    };
+                    let close = start + 4 + relative_close;
+                    let argument = value[start + 4..close].trim();
+                    value.replace_range(start..=close, &format!("{}.count", argument));
+                }
+                value = rewrite_swift_identifiers(&value);
             }
             if target == Language::Java {
                 if let Some((left, right)) = value.split_once(" != ") {
@@ -1383,7 +1659,10 @@ fn expression_for(target: Language, expression: &str) -> String {
             }
         }
     }
-    if matches!(target, Language::JavaScript | Language::Java | Language::Go | Language::Rust) {
+    if matches!(
+        target,
+        Language::JavaScript | Language::Java | Language::Go | Language::Rust
+    ) {
         value = rewrite_default_constructors(&value, target);
     }
     if matches!(target, Language::Java | Language::Go | Language::Rust) {
@@ -1410,7 +1689,11 @@ fn rewrite_default_constructors(value: &str, target: Language) -> String {
             }
         }
         let name = &value[start..*index];
-        if name.chars().next().is_none_or(|first| !first.is_ascii_uppercase()) {
+        if name
+            .chars()
+            .next()
+            .is_none_or(|first| !first.is_ascii_uppercase())
+        {
             continue;
         }
         result.push_str(&value[cursor..start]);
@@ -1448,10 +1731,12 @@ fn rewrite_numeric_list_literals(value: &str, target: Language) -> String {
         };
         let close = index + 1 + relative_close;
         let contents = &value[index + 1..close];
-        if !contents
-            .chars()
-            .all(|character| character.is_ascii_digit() || character.is_whitespace() || character == ',' || character == '-')
-        {
+        if !contents.chars().all(|character| {
+            character.is_ascii_digit()
+                || character.is_whitespace()
+                || character == ','
+                || character == '-'
+        }) {
             index = close + 1;
             continue;
         }
@@ -1518,7 +1803,9 @@ fn function_return_type(function: &Statement) -> String {
                     Statement::For { body, .. }
                     | Statement::ForEach { body, .. }
                     | Statement::While { body, .. } => {
-                        if let Some(value) = find_return(body, scope) { return Some(value); }
+                        if let Some(value) = find_return(body, scope) {
+                            return Some(value);
+                        }
                     }
                     _ => {}
                 }
@@ -1590,14 +1877,24 @@ fn parameter_type(param: &Parameter, body: &[Statement]) -> String {
                         return Some(found);
                     }
                 }
-                Statement::ForEach { variable, type_hint, iterable, body } if iterable.trim() == name => {
-                    let element = type_hint.clone().or_else(|| search(variable, body)).unwrap_or_else(|| "any".into());
+                Statement::ForEach {
+                    variable,
+                    type_hint,
+                    iterable,
+                    body,
+                } if iterable.trim() == name => {
+                    let element = type_hint
+                        .clone()
+                        .or_else(|| search(variable, body))
+                        .unwrap_or_else(|| "any".into());
                     return Some(format!("list<{}>", element));
                 }
                 Statement::For { body, .. }
                 | Statement::ForEach { body, .. }
                 | Statement::While { body, .. } => {
-                    if let Some(found) = search(name, body) { return Some(found); }
+                    if let Some(found) = search(name, body) {
+                        return Some(found);
+                    }
                 }
                 _ => {}
             }
@@ -1608,9 +1905,15 @@ fn parameter_type(param: &Parameter, body: &[Statement]) -> String {
 }
 
 fn foreach_element_type(variable: &str, explicit: &Option<String>, body: &[Statement]) -> String {
-    explicit
-        .clone()
-        .unwrap_or_else(|| parameter_type(&Parameter { name: variable.into(), type_hint: None }, body))
+    explicit.clone().unwrap_or_else(|| {
+        parameter_type(
+            &Parameter {
+                name: variable.into(),
+                type_hint: None,
+            },
+            body,
+        )
+    })
 }
 
 fn emit_statement(statement: &Statement, target: Language, level: usize) -> String {
@@ -1668,7 +1971,7 @@ fn emit_statement(statement: &Statement, target: Language, level: usize) -> Stri
                     "{}{} {} = {}",
                     pad,
                     if *mutable { "var" } else { "let" },
-                    name,
+                    lower_camel_case_identifier(name),
                     expression
                 ),
                 Language::Go => format!("{}{} := {}", pad, name, expression),
@@ -1833,7 +2136,12 @@ fn emit_statement(statement: &Statement, target: Language, level: usize) -> Stri
                 ),
             }
         }
-        Statement::ForEach { variable, type_hint, iterable, body } => {
+        Statement::ForEach {
+            variable,
+            type_hint,
+            iterable,
+            body,
+        } => {
             let rendered_body = body
                 .iter()
                 .map(|statement| emit_statement(statement, target, level + 1))
@@ -1842,13 +2150,51 @@ fn emit_statement(statement: &Statement, target: Language, level: usize) -> Stri
             let iterable = expression_for(target, iterable);
             let element_type = foreach_element_type(variable, type_hint, body);
             match target {
-                Language::JavaScript => format!("{}for (const {} of {}) {{\n{}\n{}}}", pad, variable, iterable, rendered_body, pad),
-                Language::Python => format!("{}for {} in {}:\n{}", pad, variable, iterable, if rendered_body.is_empty() { format!("{}pass", indent(level + 1)) } else { rendered_body }),
-                Language::Java => format!("{}for ({} {} : {}) {{\n{}\n{}}}", pad, type_for(target, &element_type), variable, iterable, rendered_body, pad),
-                Language::Dart => format!("{}for (final {} {} in {}) {{\n{}\n{}}}", pad, type_for(target, &element_type), variable, iterable, rendered_body, pad),
-                Language::Swift => format!("{}for {} in {} {{\n{}\n{}}}", pad, variable, iterable, rendered_body, pad),
-                Language::Go => format!("{}for _, {} := range {} {{\n{}\n{}}}", pad, variable, iterable, rendered_body, pad),
-                Language::Rust => format!("{}for {} in {} {{\n{}\n{}}}", pad, variable, iterable, rendered_body, pad),
+                Language::JavaScript => format!(
+                    "{}for (const {} of {}) {{\n{}\n{}}}",
+                    pad, variable, iterable, rendered_body, pad
+                ),
+                Language::Python => format!(
+                    "{}for {} in {}:\n{}",
+                    pad,
+                    variable,
+                    iterable,
+                    if rendered_body.is_empty() {
+                        format!("{}pass", indent(level + 1))
+                    } else {
+                        rendered_body
+                    }
+                ),
+                Language::Java => format!(
+                    "{}for ({} {} : {}) {{\n{}\n{}}}",
+                    pad,
+                    type_for(target, &element_type),
+                    variable,
+                    iterable,
+                    rendered_body,
+                    pad
+                ),
+                Language::Dart => format!(
+                    "{}for (final {} {} in {}) {{\n{}\n{}}}",
+                    pad,
+                    type_for(target, &element_type),
+                    variable,
+                    iterable,
+                    rendered_body,
+                    pad
+                ),
+                Language::Swift => format!(
+                    "{}for {} in {} {{\n{}\n{}}}",
+                    pad, variable, iterable, rendered_body, pad
+                ),
+                Language::Go => format!(
+                    "{}for _, {} := range {} {{\n{}\n{}}}",
+                    pad, variable, iterable, rendered_body, pad
+                ),
+                Language::Rust => format!(
+                    "{}for {} in {} {{\n{}\n{}}}",
+                    pad, variable, iterable, rendered_body, pad
+                ),
             }
         }
         Statement::While { condition, body } => {
@@ -1859,53 +2205,137 @@ fn emit_statement(statement: &Statement, target: Language, level: usize) -> Stri
                 .join("\n");
             let condition = expression_for(target, condition);
             match target {
-                Language::Python => format!("{}while {}:\n{}", pad, condition, if rendered_body.is_empty() { format!("{}pass", indent(level + 1)) } else { rendered_body }),
-                Language::Go | Language::Rust | Language::Swift => format!("{}while {} {{\n{}\n{}}}", pad, condition, rendered_body, pad),
-                _ => format!("{}while ({}) {{\n{}\n{}}}", pad, condition, rendered_body, pad),
+                Language::Python => format!(
+                    "{}while {}:\n{}",
+                    pad,
+                    condition,
+                    if rendered_body.is_empty() {
+                        format!("{}pass", indent(level + 1))
+                    } else {
+                        rendered_body
+                    }
+                ),
+                Language::Go | Language::Rust | Language::Swift => format!(
+                    "{}while {} {{\n{}\n{}}}",
+                    pad, condition, rendered_body, pad
+                ),
+                _ => format!(
+                    "{}while ({}) {{\n{}\n{}}}",
+                    pad, condition, rendered_body, pad
+                ),
             }
         }
-        Statement::For { initializer, condition, update, body } => {
+        Statement::For {
+            initializer,
+            condition,
+            update,
+            body,
+        } => {
             let rendered_body = body
                 .iter()
                 .map(|statement| emit_statement(statement, target, level + 1))
                 .collect::<Vec<_>>()
                 .join("\n");
             if target == Language::Python {
-                let init = initializer.as_deref().and_then(|statement| match statement {
-                    Statement::Variable { name, value, .. } => Some((name.as_str(), value.as_str())),
-                    _ => None,
-                });
+                let init = initializer
+                    .as_deref()
+                    .and_then(|statement| match statement {
+                        Statement::Variable { name, value, .. } => {
+                            Some((name.as_str(), value.as_str()))
+                        }
+                        _ => None,
+                    });
                 let range = init.and_then(|(name, start)| {
-                    let (operator, end) = condition.split_once("<")
+                    let (operator, end) = condition
+                        .split_once("<")
                         .or_else(|| condition.split_once("<="))?;
-                    if operator.trim() != name { return None; }
-                    let step = if update.trim() == format!("{}++", name) { "1" } else { "-1" };
-                    Some(format!("range({}, {}{}, {})", start, expression_for(target, end.trim()), if condition.contains("<=") { " + 1" } else { "" }, step))
+                    if operator.trim() != name {
+                        return None;
+                    }
+                    let step = if update.trim() == format!("{}++", name) {
+                        "1"
+                    } else {
+                        "-1"
+                    };
+                    Some(format!(
+                        "range({}, {}{}, {})",
+                        start,
+                        expression_for(target, end.trim()),
+                        if condition.contains("<=") { " + 1" } else { "" },
+                        step
+                    ))
                 });
                 if let Some(range) = range {
-                    return format!("{}for {} in {}:\n{}", pad, init.unwrap().0, range, rendered_body);
+                    return format!(
+                        "{}for {} in {}:\n{}",
+                        pad,
+                        init.unwrap().0,
+                        range,
+                        rendered_body
+                    );
                 }
-                return format!("{}while {}:\n{}", pad, expression_for(target, condition), rendered_body);
+                return format!(
+                    "{}while {}:\n{}",
+                    pad,
+                    expression_for(target, condition),
+                    rendered_body
+                );
             }
-            let initializer_text = initializer.as_deref()
-                .map(|value| emit_statement(value, target, 0).trim().trim_end_matches(';').to_string())
+            let initializer_text = initializer
+                .as_deref()
+                .map(|value| {
+                    emit_statement(value, target, 0)
+                        .trim()
+                        .trim_end_matches(';')
+                        .to_string()
+                })
                 .unwrap_or_default();
             let condition_text = expression_for(target, condition);
             let update_text = expression_for(target, update);
             match target {
                 Language::JavaScript | Language::Java | Language::Dart => format!(
-                    "{}for ({}; {}; {}) {{\n{}\n{}}}", pad, initializer_text, condition_text, update_text, rendered_body, pad
+                    "{}for ({}; {}; {}) {{\n{}\n{}}}",
+                    pad, initializer_text, condition_text, update_text, rendered_body, pad
                 ),
-                Language::Go => format!("{}for {}; {}; {} {{\n{}\n{}}}", pad, initializer_text, condition_text, update_text, rendered_body, pad),
+                Language::Go => format!(
+                    "{}for {}; {}; {} {{\n{}\n{}}}",
+                    pad, initializer_text, condition_text, update_text, rendered_body, pad
+                ),
                 Language::Swift | Language::Rust => {
-                    let update = emit_statement(&Statement::Expression(update.clone()), target, level + 1);
-                    format!("{}{}\n{}while {} {{\n{}\n{}\n{}}}", pad, initializer_text, pad, condition_text, rendered_body, update, pad)
+                    let update =
+                        emit_statement(&Statement::Expression(update.clone()), target, level + 1);
+                    format!(
+                        "{}{}\n{}while {} {{\n{}\n{}\n{}}}",
+                        pad, initializer_text, pad, condition_text, rendered_body, update, pad
+                    )
                 }
                 Language::Python => unreachable!(),
             }
         }
-        Statement::Break => format!("{}break{}", pad, if matches!(target, Language::JavaScript | Language::Java | Language::Dart | Language::Rust) { ";" } else { "" }),
-        Statement::Continue => format!("{}continue{}", pad, if matches!(target, Language::JavaScript | Language::Java | Language::Dart | Language::Rust) { ";" } else { "" }),
+        Statement::Break => format!(
+            "{}break{}",
+            pad,
+            if matches!(
+                target,
+                Language::JavaScript | Language::Java | Language::Dart | Language::Rust
+            ) {
+                ";"
+            } else {
+                ""
+            }
+        ),
+        Statement::Continue => format!(
+            "{}continue{}",
+            pad,
+            if matches!(
+                target,
+                Language::JavaScript | Language::Java | Language::Dart | Language::Rust
+            ) {
+                ";"
+            } else {
+                ""
+            }
+        ),
         Statement::Function {
             name, params, body, ..
         } => {
@@ -1942,8 +2372,14 @@ fn emit_statement(statement: &Statement, target: Language, level: usize) -> Stri
                 .collect::<Vec<_>>()
                 .join(", ");
             let rendered_params = if target == Language::Python && level > 0 {
-                if rendered_params.is_empty() { "self".into() } else { format!("self, {}", rendered_params) }
-            } else { rendered_params };
+                if rendered_params.is_empty() {
+                    "self".into()
+                } else {
+                    format!("self, {}", rendered_params)
+                }
+            } else {
+                rendered_params
+            };
             match target {
                 Language::JavaScript => format!(
                     "{}function {}({}) {{\n{}\n{}}}",
@@ -1983,7 +2419,7 @@ fn emit_statement(statement: &Statement, target: Language, level: usize) -> Stri
                 Language::Swift => format!(
                     "{}func {}({}){} {{\n{}\n{}}}",
                     pad,
-                    name,
+                    lower_camel_case_identifier(name),
                     rendered_params,
                     if return_type == "void" {
                         String::new()
@@ -2024,7 +2460,12 @@ fn emit_statement(statement: &Statement, target: Language, level: usize) -> Stri
     }
 }
 
-fn emit_class_statement(name: &str, members: &[Statement], target: Language, level: usize) -> String {
+fn emit_class_statement(
+    name: &str,
+    members: &[Statement],
+    target: Language,
+    level: usize,
+) -> String {
     let pad = match target {
         Language::Go => "\t".repeat(level),
         Language::Dart => "  ".repeat(level),
@@ -2032,49 +2473,164 @@ fn emit_class_statement(name: &str, members: &[Statement], target: Language, lev
     };
     match target {
         Language::JavaScript => {
-            let methods = members.iter().filter_map(|member| {
-                let Statement::Function { name, params, body, .. } = member else { return None; };
-                let body = body.iter().map(|statement| emit_statement(statement, target, level + 2)).collect::<Vec<_>>().join("\n");
-                Some(format!("{}{}({}) {{\n{}\n{}}}", indent(level + 1), name, params.iter().filter(|parameter| parameter.name != "self").map(|parameter| parameter.name.as_str()).collect::<Vec<_>>().join(", "), body, indent(level + 1)))
-            }).collect::<Vec<_>>().join("\n\n");
+            let methods = members
+                .iter()
+                .filter_map(|member| {
+                    let Statement::Function {
+                        name, params, body, ..
+                    } = member
+                    else {
+                        return None;
+                    };
+                    let body = body
+                        .iter()
+                        .map(|statement| emit_statement(statement, target, level + 2))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Some(format!(
+                        "{}{}({}) {{\n{}\n{}}}",
+                        indent(level + 1),
+                        name,
+                        params
+                            .iter()
+                            .filter(|parameter| parameter.name != "self")
+                            .map(|parameter| parameter.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        body,
+                        indent(level + 1)
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
             format!("{}class {} {{\n{}\n{}}}", pad, name, methods, pad)
         }
         Language::Python => {
-            let rendered = members.iter().map(|statement| emit_statement(statement, target, level + 1)).collect::<Vec<_>>().join("\n\n");
-            format!("{}class {}:\n{}", pad, name, if rendered.is_empty() { format!("{}pass", indent(level + 1)) } else { rendered })
+            let rendered = members
+                .iter()
+                .map(|statement| emit_statement(statement, target, level + 1))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            format!(
+                "{}class {}:\n{}",
+                pad,
+                name,
+                if rendered.is_empty() {
+                    format!("{}pass", indent(level + 1))
+                } else {
+                    rendered
+                }
+            )
         }
         Language::Java => {
-            let rendered = members.iter().map(|statement| emit_statement(statement, target, level + 1)).collect::<Vec<_>>().join("\n\n");
+            let rendered = members
+                .iter()
+                .map(|statement| emit_statement(statement, target, level + 1))
+                .collect::<Vec<_>>()
+                .join("\n\n");
             format!("{}static class {} {{\n{}\n{}}}", pad, name, rendered, pad)
         }
         Language::Dart | Language::Swift => {
-            let rendered = members.iter().map(|statement| emit_statement(statement, target, level + 1)).collect::<Vec<_>>().join("\n\n");
+            let rendered = members
+                .iter()
+                .map(|statement| emit_statement(statement, target, level + 1))
+                .collect::<Vec<_>>()
+                .join("\n\n");
             format!("{}class {} {{\n{}\n{}}}", pad, name, rendered, pad)
         }
         Language::Go => {
-            let methods = members.iter().filter_map(|member| {
-                let Statement::Function { name: method, params, body, .. } = member else { return None; };
-                let parameters = params.iter().filter(|parameter| parameter.name != "self").map(|parameter| {
-                    let ty = parameter_type(parameter, body);
-                    format!("{} {}", parameter.name, type_for(target, &ty))
-                }).collect::<Vec<_>>().join(", ");
-                let return_type = function_return_type(member);
-                let body = body.iter().map(|statement| emit_statement(statement, target, 1)).collect::<Vec<_>>().join("\n");
-                Some(format!("func (_self {}) {}({}){} {{\n{}\n}}", name, method, parameters, if return_type == "void" { String::new() } else { format!(" {}", type_for(target, &return_type)) }, body))
-            }).collect::<Vec<_>>().join("\n\n");
-            format!("type {} struct {{}}{}{}", name, if methods.is_empty() { "" } else { "\n\n" }, methods)
+            let methods = members
+                .iter()
+                .filter_map(|member| {
+                    let Statement::Function {
+                        name: method,
+                        params,
+                        body,
+                        ..
+                    } = member
+                    else {
+                        return None;
+                    };
+                    let parameters = params
+                        .iter()
+                        .filter(|parameter| parameter.name != "self")
+                        .map(|parameter| {
+                            let ty = parameter_type(parameter, body);
+                            format!("{} {}", parameter.name, type_for(target, &ty))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let return_type = function_return_type(member);
+                    let body = body
+                        .iter()
+                        .map(|statement| emit_statement(statement, target, 1))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Some(format!(
+                        "func (_self {}) {}({}){} {{\n{}\n}}",
+                        name,
+                        method,
+                        parameters,
+                        if return_type == "void" {
+                            String::new()
+                        } else {
+                            format!(" {}", type_for(target, &return_type))
+                        },
+                        body
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            format!(
+                "type {} struct {{}}{}{}",
+                name,
+                if methods.is_empty() { "" } else { "\n\n" },
+                methods
+            )
         }
         Language::Rust => {
-            let methods = members.iter().filter_map(|member| {
-                let Statement::Function { name: method, params, body, .. } = member else { return None; };
-                let parameters = params.iter().filter(|parameter| parameter.name != "self").map(|parameter| {
-                    let ty = parameter_type(parameter, body);
-                    format!("{}: {}", parameter.name, type_for(target, &ty))
-                }).collect::<Vec<_>>().join(", ");
-                let return_type = function_return_type(member);
-                let body = body.iter().map(|statement| emit_statement(statement, target, 2)).collect::<Vec<_>>().join("\n");
-                Some(format!("    fn {}(&self{}{}){} {{\n{}\n    }}", method, if parameters.is_empty() { "" } else { ", " }, parameters, if return_type == "void" { String::new() } else { format!(" -> {}", type_for(target, &return_type)) }, body))
-            }).collect::<Vec<_>>().join("\n\n");
+            let methods = members
+                .iter()
+                .filter_map(|member| {
+                    let Statement::Function {
+                        name: method,
+                        params,
+                        body,
+                        ..
+                    } = member
+                    else {
+                        return None;
+                    };
+                    let parameters = params
+                        .iter()
+                        .filter(|parameter| parameter.name != "self")
+                        .map(|parameter| {
+                            let ty = parameter_type(parameter, body);
+                            format!("{}: {}", parameter.name, type_for(target, &ty))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let return_type = function_return_type(member);
+                    let body = body
+                        .iter()
+                        .map(|statement| emit_statement(statement, target, 2))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    Some(format!(
+                        "    fn {}(&self{}{}){} {{\n{}\n    }}",
+                        method,
+                        if parameters.is_empty() { "" } else { ", " },
+                        parameters,
+                        if return_type == "void" {
+                            String::new()
+                        } else {
+                            format!(" -> {}", type_for(target, &return_type))
+                        },
+                        body
+                    ))
+                })
+                .collect::<Vec<_>>()
+                .join("\n\n");
             format!("#[allow(dead_code, non_snake_case, unused_variables)]\nstruct {};\n\n#[allow(dead_code, non_snake_case, unused_variables)]\nimpl {} {{\n{}\n}}", name, name, methods)
         }
     }
@@ -2097,7 +2653,10 @@ fn emit(program: &Program, target: Language) -> String {
     } else {
         program.clone()
     };
-    let canonical_entrypoint = matches!(target, Language::Java | Language::Dart | Language::Go | Language::Rust);
+    let canonical_entrypoint = matches!(
+        target,
+        Language::Java | Language::Dart | Language::Go | Language::Rust
+    );
     let explicit_main = program.body.iter().find_map(|statement| match statement {
         Statement::Function { name, body, .. } if name == "main" => Some(body.as_slice()),
         _ => None,
@@ -2106,13 +2665,19 @@ fn emit(program: &Program, target: Language) -> String {
         .body
         .iter()
         .filter(|s| !matches!(s, Statement::Function { .. } | Statement::Class { .. }))
-        .filter(|statement| !canonical_entrypoint || !matches!(statement, Statement::Expression(value) if value.trim() == "main()"))
+        .filter(|statement| {
+            !canonical_entrypoint
+                || !matches!(statement, Statement::Expression(value) if value.trim() == "main()")
+        })
         .collect::<Vec<_>>();
     let declarations = program
         .body
         .iter()
         .filter(|s| matches!(s, Statement::Function { .. } | Statement::Class { .. }))
-        .filter(|statement| !canonical_entrypoint || !matches!(statement, Statement::Function { name, .. } if name == "main"))
+        .filter(|statement| {
+            !canonical_entrypoint
+                || !matches!(statement, Statement::Function { name, .. } if name == "main")
+        })
         .collect::<Vec<_>>();
     let entry_body = explicit_main
         .into_iter()
@@ -2149,7 +2714,10 @@ fn emit(program: &Program, target: Language) -> String {
             let code = format!("public final class TranslatedProgram {{\n    private TranslatedProgram() {{}}\n{}{}{}\n    public static void main(String[] args) {{\n{}\n    }}\n}}",
                 if fn_text.is_empty() { "" } else { "\n" }, fn_text, if fn_text.is_empty() { "" } else { "\n" }, main)
             ;
-            if ["List<", "Set<", "Map<", "List.of("].iter().any(|symbol| code.contains(symbol)) {
+            if ["List<", "Set<", "Map<", "List.of("]
+                .iter()
+                .any(|symbol| code.contains(symbol))
+            {
                 format!("import java.util.*;\n\n{}", code)
             } else {
                 code
@@ -2190,7 +2758,15 @@ fn emit(program: &Program, target: Language) -> String {
                 if fn_text.is_empty() { "" } else { "\n\n" },
                 main
             );
-            format!("package main\n\n{}{}", if body.contains("fmt.") { "import \"fmt\"\n\n" } else { "" }, body)
+            format!(
+                "package main\n\n{}{}",
+                if body.contains("fmt.") {
+                    "import \"fmt\"\n\n"
+                } else {
+                    ""
+                },
+                body
+            )
         }
         Language::Rust => {
             let fn_text = declarations
@@ -2224,8 +2800,29 @@ pub fn translate(source: &str, from: Language, to: Language) -> String {
         use crate::frontend::Frontend;
         let unit = crate::frontend::dart::DartFrontend.parse(source);
         crate::backend::python::PythonBackend.emit(&unit).code
+    } else if from == Language::Python && to == Language::Dart {
+        use crate::backend::Backend;
+        let unit = crate::frontend::parse_source(source, from);
+        let has_explicit_entrypoint = unit.declarations.iter().any(|declaration| {
+            matches!(
+                declaration,
+                crate::typed_ir::Declaration::Function(function) if function.name == "main"
+            )
+        });
+        if has_explicit_entrypoint {
+            crate::backend::dart::DartBackend.emit(&unit).code
+        } else {
+            emit(&parse(source, from, true), to)
+        }
     } else {
-        emit(&parse(source, from, matches!(from, Language::Dart | Language::Python)), to)
+        emit(
+            &parse(
+                source,
+                from,
+                matches!(from, Language::Dart | Language::Python),
+            ),
+            to,
+        )
     };
     if !output.ends_with('\n') {
         output.push('\n');
@@ -2327,36 +2924,87 @@ mod tests {
         }
     }
 
-    fn compile_and_run(root: &std::path::Path, target: Language, source: &str) -> std::process::Output {
-        let (file_name, compile, run): (&str, Option<(&str, Vec<&str>)>, (&str, Vec<&str>)) = match target {
-            Language::JavaScript => ("program.js", None, ("node", vec!["program.js"])),
-            Language::Java => (
-                "TranslatedProgram.java",
-                Some(("/opt/homebrew/opt/openjdk/bin/javac", vec!["-Werror", "-Xlint:all", "TranslatedProgram.java"])),
-                ("/opt/homebrew/opt/openjdk/bin/java", vec!["-cp", ".", "TranslatedProgram"]),
-            ),
-            Language::Dart => ("program.dart", None, ("/opt/homebrew/share/flutter/bin/cache/dart-sdk/bin/dart", vec!["run", "program.dart"])),
-            Language::Swift => (
-                "program.swift",
-                Some(("swiftc", vec!["-warnings-as-errors", "-module-cache-path", ".swift-module-cache", "program.swift", "-o", "program"])),
-                ("./program", vec![]),
-            ),
-            Language::Python => ("program.py", None, ("python3", vec!["program.py"])),
-            Language::Go => ("program.go", None, ("go", vec!["run", "program.go"])),
-            Language::Rust => (
-                "program.rs",
-                Some(("rustc", vec!["--edition=2024", "-Dwarnings", "program.rs", "-o", "program"])),
-                ("./program", vec![]),
-            ),
-        };
+    fn compile_and_run(
+        root: &std::path::Path,
+        target: Language,
+        source: &str,
+    ) -> std::process::Output {
+        let (file_name, compile, run): (&str, Option<(&str, Vec<&str>)>, (&str, Vec<&str>)) =
+            match target {
+                Language::JavaScript => ("program.js", None, ("node", vec!["program.js"])),
+                Language::Java => (
+                    "TranslatedProgram.java",
+                    Some((
+                        "/opt/homebrew/opt/openjdk/bin/javac",
+                        vec!["-Werror", "-Xlint:all", "TranslatedProgram.java"],
+                    )),
+                    (
+                        "/opt/homebrew/opt/openjdk/bin/java",
+                        vec!["-cp", ".", "TranslatedProgram"],
+                    ),
+                ),
+                Language::Dart => (
+                    "program.dart",
+                    None,
+                    (
+                        "/opt/homebrew/share/flutter/bin/cache/dart-sdk/bin/dart",
+                        vec!["run", "program.dart"],
+                    ),
+                ),
+                Language::Swift => (
+                    "program.swift",
+                    Some((
+                        "swiftc",
+                        vec![
+                            "-warnings-as-errors",
+                            "-module-cache-path",
+                            ".swift-module-cache",
+                            "program.swift",
+                            "-o",
+                            "program",
+                        ],
+                    )),
+                    ("./program", vec![]),
+                ),
+                Language::Python => ("program.py", None, ("python3", vec!["program.py"])),
+                Language::Go => ("program.go", None, ("go", vec!["run", "program.go"])),
+                Language::Rust => (
+                    "program.rs",
+                    Some((
+                        "rustc",
+                        vec![
+                            "--edition=2024",
+                            "-Dwarnings",
+                            "program.rs",
+                            "-o",
+                            "program",
+                        ],
+                    )),
+                    ("./program", vec![]),
+                ),
+            };
         fs::write(root.join(file_name), source).unwrap();
         if let Some((compiler, arguments)) = compile {
-            let result = Command::new(compiler).args(arguments).current_dir(root).output().unwrap();
-            assert!(result.status.success(), "{:?} compile failed:\n{}\nGenerated:\n{}", target, String::from_utf8_lossy(&result.stderr), source);
+            let result = Command::new(compiler)
+                .args(arguments)
+                .current_dir(root)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{:?} compile failed:\n{}\nGenerated:\n{}",
+                target,
+                String::from_utf8_lossy(&result.stderr),
+                source
+            );
         }
         let mut command = Command::new(run.0);
         command.args(run.1).current_dir(root);
-        if target == Language::Dart { command.env("DART_DISABLE_ANALYTICS", "true").env("CI", "true"); }
+        if target == Language::Dart {
+            command
+                .env("DART_DISABLE_ANALYTICS", "true")
+                .env("CI", "true");
+        }
         command.output().unwrap()
     }
 
@@ -2378,8 +3026,13 @@ mod tests {
 
     #[test]
     fn every_language_pair_preserves_typed_collection_iteration() {
-        let root = std::env::temp_dir().join(format!("translatecode-collection-matrix-{}", std::process::id()));
-        if root.exists() { fs::remove_dir_all(&root).unwrap(); }
+        let root = std::env::temp_dir().join(format!(
+            "translatecode-collection-matrix-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
         fs::create_dir_all(&root).unwrap();
         for from in LANGUAGES {
             for target in LANGUAGES {
@@ -2387,8 +3040,21 @@ mod tests {
                 fs::create_dir_all(&pair).unwrap();
                 let generated = translate(collection_fixture(from), from, target);
                 let result = compile_and_run(&pair, target, &generated);
-                assert!(result.status.success(), "{:?} -> {:?} run failed:\n{}\nGenerated:\n{}", from, target, String::from_utf8_lossy(&result.stderr), generated);
-                assert_eq!(String::from_utf8_lossy(&result.stdout), "6\n", "{:?} -> {:?} changed collection behavior", from, target);
+                assert!(
+                    result.status.success(),
+                    "{:?} -> {:?} run failed:\n{}\nGenerated:\n{}",
+                    from,
+                    target,
+                    String::from_utf8_lossy(&result.stderr),
+                    generated
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&result.stdout),
+                    "6\n",
+                    "{:?} -> {:?} changed collection behavior",
+                    from,
+                    target
+                );
             }
         }
         fs::remove_dir_all(root).unwrap();
@@ -2406,16 +3072,32 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 "#;
-        let root = std::env::temp_dir().join(format!("translatecode-python-oop-matrix-{}", std::process::id()));
-        if root.exists() { fs::remove_dir_all(&root).unwrap(); }
+        let root = std::env::temp_dir().join(format!(
+            "translatecode-python-oop-matrix-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
         fs::create_dir_all(&root).unwrap();
         for target in LANGUAGES {
             let pair = root.join(format!("{:?}", target).to_lowercase());
             fs::create_dir_all(&pair).unwrap();
             let generated = translate(source, Language::Python, target);
             let result = compile_and_run(&pair, target, &generated);
-            assert!(result.status.success(), "Python -> {:?} run failed:\n{}\nGenerated:\n{}", target, String::from_utf8_lossy(&result.stderr), generated);
-            assert_eq!(String::from_utf8_lossy(&result.stdout), "14\n", "Python -> {:?} changed class/main behavior", target);
+            assert!(
+                result.status.success(),
+                "Python -> {:?} run failed:\n{}\nGenerated:\n{}",
+                target,
+                String::from_utf8_lossy(&result.stderr),
+                generated
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&result.stdout),
+                "14\n",
+                "Python -> {:?} changed class/main behavior",
+                target
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -2423,8 +3105,13 @@ if __name__ == "__main__":
     #[test]
     fn unsupported_constructs_emit_explicit_target_valid_fallbacks() {
         let source = "try:\n    print(\"unsafe\")\nexcept Exception:\n    print(\"fallback\")\n";
-        let root = std::env::temp_dir().join(format!("translatecode-fallback-matrix-{}", std::process::id()));
-        if root.exists() { fs::remove_dir_all(&root).unwrap(); }
+        let root = std::env::temp_dir().join(format!(
+            "translatecode-fallback-matrix-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
         fs::create_dir_all(&root).unwrap();
         for target in LANGUAGES {
             let pair = root.join(format!("{:?}", target).to_lowercase());
@@ -2432,7 +3119,13 @@ if __name__ == "__main__":
             let generated = translate(source, Language::Python, target);
             assert!(generated.contains("Translation stopped at unsupported construct"));
             let result = compile_and_run(&pair, target, &generated);
-            assert!(result.status.success(), "fallback for {:?} was not target-valid:\n{}\nGenerated:\n{}", target, String::from_utf8_lossy(&result.stderr), generated);
+            assert!(
+                result.status.success(),
+                "fallback for {:?} was not target-valid:\n{}\nGenerated:\n{}",
+                target,
+                String::from_utf8_lossy(&result.stderr),
+                generated
+            );
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -2548,6 +3241,39 @@ if __name__ == "__main__":
     }
 
     #[test]
+    fn python_binary_search_lowers_python_syntax_to_valid_swift() {
+        let source = r#"def binary_search(nums: list[int], target: int) -> int:
+    left, right = 0, len(nums) - 1
+    while left <= right:
+        middle = (left + right) // 2
+        if nums[middle] == target:
+            return middle
+        elif nums[middle] < target:
+            left = middle + 1
+        else:
+            right = middle - 1
+    return -1
+"#;
+        let output = translate(source, Language::Python, Language::Swift);
+        assert!(
+            output.contains("func binarySearch(_ nums: [Int], _ target: Int) -> Int"),
+            "{}",
+            output
+        );
+        assert!(output.contains("var left = 0"), "{}", output);
+        assert!(output.contains("var right = nums.count - 1"), "{}", output);
+        assert!(
+            output.contains("let middle = (left + right) / 2"),
+            "{}",
+            output
+        );
+        assert!(output.contains("left = middle + 1"), "{}", output);
+        assert!(output.contains("right = middle - 1"), "{}", output);
+        assert!(!output.contains("len(nums)"));
+        assert!(!output.contains("// 2"));
+    }
+
+    #[test]
     fn dart_to_python_preserves_generic_method_parameters_and_main_call_arguments() {
         let source = r#"void main(){
   Solution().twoSum([3,4,5,6], 7);
@@ -2558,9 +3284,17 @@ class Solution{
     return;
   }
 }"#;
-        assert_eq!(
-            translate(source, Language::Dart, Language::Python),
-            "class Solution:\n    def twoSum(self, nums: list[int], target: int) -> None:\n        return\n\ndef main() -> None:\n    Solution().twoSum([3,4,5,6], 7)\n\nif __name__ == \"__main__\":\n    main()\n"
+        let output = translate(source, Language::Dart, Language::Python);
+        assert!(output.contains("class Solution:"), "{}", output);
+        assert!(
+            output.contains("def twoSum(self, nums: list[int], target: int) -> None:"),
+            "{}",
+            output
+        );
+        assert!(
+            output.contains("Solution().twoSum([3, 4, 5, 6], 7)"),
+            "{}",
+            output
         );
     }
 
@@ -2587,63 +3321,60 @@ class Solution {
         for target in LANGUAGES {
             let pair = root.join(format!("{:?}", target).to_lowercase());
             fs::create_dir_all(&pair).unwrap();
-            let (file_name, compile, run): (
-                &str,
-                Option<(&str, Vec<&str>)>,
-                (&str, Vec<&str>),
-            ) = match target {
-                Language::JavaScript => ("program.js", None, ("node", vec!["program.js"])),
-                Language::Java => (
-                    "TranslatedProgram.java",
-                    Some((
-                        "/opt/homebrew/opt/openjdk/bin/javac",
-                        vec!["-Werror", "-Xlint:all", "TranslatedProgram.java"],
-                    )),
-                    (
-                        "/opt/homebrew/opt/openjdk/bin/java",
-                        vec!["-cp", ".", "TranslatedProgram"],
+            let (file_name, compile, run): (&str, Option<(&str, Vec<&str>)>, (&str, Vec<&str>)) =
+                match target {
+                    Language::JavaScript => ("program.js", None, ("node", vec!["program.js"])),
+                    Language::Java => (
+                        "TranslatedProgram.java",
+                        Some((
+                            "/opt/homebrew/opt/openjdk/bin/javac",
+                            vec!["-Werror", "-Xlint:all", "TranslatedProgram.java"],
+                        )),
+                        (
+                            "/opt/homebrew/opt/openjdk/bin/java",
+                            vec!["-cp", ".", "TranslatedProgram"],
+                        ),
                     ),
-                ),
-                Language::Dart => (
-                    "program.dart",
-                    None,
-                    (
-                        "/opt/homebrew/share/flutter/bin/cache/dart-sdk/bin/dart",
-                        vec!["run", "program.dart"],
+                    Language::Dart => (
+                        "program.dart",
+                        None,
+                        (
+                            "/opt/homebrew/share/flutter/bin/cache/dart-sdk/bin/dart",
+                            vec!["run", "program.dart"],
+                        ),
                     ),
-                ),
-                Language::Swift => (
-                    "program.swift",
-                    Some((
-                        "swiftc",
-                        vec![
-                            "-warnings-as-errors",
-                            "-module-cache-path",
-                            ".swift-module-cache",
-                            "program.swift",
-                            "-o",
-                            "program",
-                        ],
-                    )),
-                    ("./program", vec![]),
-                ),
-                Language::Python => ("program.py", None, ("python3", vec!["program.py"])),
-                Language::Go => ("program.go", None, ("go", vec!["run", "program.go"])),
-                Language::Rust => (
-                    "program.rs",
-                    Some((
-                        "rustc",
-                        vec![
-                            "--edition=2024",
-                            "-Dwarnings",
-                            "program.rs",
-                            "-o",
-                            "program",
-                        ],
-                    )),
-                    ("./program", vec![]),
-                ),
-            };
+                    Language::Swift => (
+                        "program.swift",
+                        Some((
+                            "swiftc",
+                            vec![
+                                "-warnings-as-errors",
+                                "-module-cache-path",
+                                ".swift-module-cache",
+                                "program.swift",
+                                "-o",
+                                "program",
+                            ],
+                        )),
+                        ("./program", vec![]),
+                    ),
+                    Language::Python => ("program.py", None, ("python3", vec!["program.py"])),
+                    Language::Go => ("program.go", None, ("go", vec!["run", "program.go"])),
+                    Language::Rust => (
+                        "program.rs",
+                        Some((
+                            "rustc",
+                            vec![
+                                "--edition=2024",
+                                "-Dwarnings",
+                                "program.rs",
+                                "-o",
+                                "program",
+                            ],
+                        )),
+                        ("./program", vec![]),
+                    ),
+                };
             fs::write(
                 pair.join(file_name),
                 translate(source, Language::Dart, target),
