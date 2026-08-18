@@ -12,6 +12,17 @@ let modulePromise;
 
 function createWasiImports(memoryRef) {
   const view = () => new DataView(memoryRef.current.buffer);
+  const randomBytes = (pointer, length) => {
+    const bytes = new Uint8Array(memoryRef.current.buffer, pointer, length);
+    const cryptoApi = globalThis.crypto;
+    if (!cryptoApi?.getRandomValues) {
+      throw new Error('Secure random values are unavailable in this browser');
+    }
+    // Web Crypto limits a single getRandomValues call to 65536 bytes.
+    for (let offset = 0; offset < bytes.length; offset += 65536) {
+      cryptoApi.getRandomValues(bytes.subarray(offset, offset + 65536));
+    }
+  };
   return {
     fd_write(_fd, iovecs, count, writtenPointer) {
       let written = 0;
@@ -31,6 +42,10 @@ function createWasiImports(memoryRef) {
     fd_prestat_get() { return 8; },
     fd_prestat_dir_name() { return 8; },
     fd_seek() { return 8; },
+    random_get(pointer, length) {
+      randomBytes(pointer, length);
+      return 0;
+    },
     proc_exit(code) { throw new Error(`Wasm engine exited with status ${code}`); },
   };
 }

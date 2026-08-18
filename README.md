@@ -10,11 +10,15 @@ The compiler-v2 work now uses Tree-sitter and a typed declaration IR. Dart is th
 - Primitive string, integer, float, and boolean types
 - Function declarations and calls
 - `if`/`else` blocks
+- Typed collection literals and cross-language collection iteration
+- `for`, `for-each`, and `while` loops with mutability propagation
+- Classes, instance methods, constructor calls, and entry-point normalization
 - Return statements
 - Print statements for every supported language
 - Conventional entry-point normalization for Java, Dart, Go, and Rust
+- Explicit target-valid diagnostics for constructs that cannot be lowered safely
 
-Every source language uses the same language-neutral IR and can be emitted to every target language, including same-language normalization.
+Every source language is lowered into a language-neutral structural representation before emission. Type spellings are normalized centrally (`list[int]`, `List<int>`, `[]int`, `[Int]`, and `Vec<i64>` all resolve to the same semantic collection type) so dynamic sources do not silently degrade at static targets.
 
 ## Run
 
@@ -42,7 +46,7 @@ brew install llvm wasi-libc
 cargo test --manifest-path engine/Cargo.toml
 ```
 
-The test suite covers the original core 49-pair matrix, verifies the Tree-sitter Dart frontend against the comprehensive OOP fixture, validates its typed class/member inventory, checks the Java structural backend, and asks installed language compilers to accept generated core-subset JavaScript, Python, Java, Dart, Swift, Go, and Rust.
+The test suite compiles the complete 49-pair matrix, executes three scalar behavior fixtures across all 49 pairs, executes typed collection iteration across all 49 pairs, and verifies Dart- and Python-origin class/entry-point programs on every target. It also verifies explicit compile-safe fallbacks, the Tree-sitter Dart frontend, typed class/member inventory, and formatter acceptance.
 
 ## Architecture
 

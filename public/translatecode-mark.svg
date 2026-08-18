@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-labelledby="title desc">
+  <title id="title">TranslateCode</title>
+  <desc id="desc">Two clean paths crossing from source to target</desc>
+  <defs>
+    <linearGradient id="accent" x1="5" y1="10" x2="43" y2="38" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A78BFA"/>
+      <stop offset=".52" stop-color="#7C83F5"/>
+      <stop offset="1" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+  <path d="M5 13h6.5c4.6 0 7 2.3 9.4 6l6.2 10c2.3 3.7 4.9 6 9.4 6H42" fill="none" stroke="#090A0F" stroke-width="7.25" stroke-linecap="round"/>
+  <path d="M5 35h6.5c4.6 0 7-2.3 9.4-6l6.2-10c2.3-3.7 4.9-6 9.4-6H42" fill="none" stroke="#090A0F" stroke-width="7.25" stroke-linecap="round"/>
+  <path d="M5 13h6.5c4.6 0 7 2.3 9.4 6l6.2 10c2.3 3.7 4.9 6 9.4 6H42" fill="none" stroke="url(#accent)" stroke-width="4" stroke-linecap="round"/>
+  <path d="M5 35h6.5c4.6 0 7-2.3 9.4-6l6.2-10c2.3-3.7 4.9-6 9.4-6H42" fill="none" stroke="#F4F4F5" stroke-width="4" stroke-linecap="round"/>
+  <path d="m37.5 8.5 4.75 4.5-4.75 4.5" fill="none" stroke="#F4F4F5" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="m37.5 30.5 4.75 4.5-4.75 4.5" fill="none" stroke="#38BDF8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

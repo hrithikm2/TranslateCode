@@ -1,11 +1,28 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
 import { python } from '@codemirror/lang-python';
+import { siDart, siGo, siJavascript, siPython, siRust, siSwift } from 'simple-icons';
+import javaLogo from 'devicon/icons/java/java-original.svg';
 import { detectLanguage, LANGUAGE_META } from './languageDetection.js';
 import { transpile, warmEngine } from './wasmEngine.js';
 import './styles.css';
+
+const LANGUAGE_THEMES = {
+  python: { logo: siPython, primary: '#3776AB', secondary: '#FFD43B', rgb: '55, 118, 171' },
+  javascript: { logo: siJavascript, primary: '#F7DF1E', secondary: '#FFEA70', rgb: '247, 223, 30' },
+  typescript: { icon: 'TS', primary: '#3178C6', secondary: '#76B7F0', rgb: '49, 120, 198' },
+  rust: { logo: siRust, primary: '#CE412B', secondary: '#DEA584', rgb: '206, 65, 43' },
+  go: { logo: siGo, primary: '#00ADD8', secondary: '#66D9EF', rgb: '0, 173, 216' },
+  cpp: { icon: 'C+', primary: '#00599C', secondary: '#659AD2', rgb: '0, 89, 156' },
+  csharp: { icon: 'C#', primary: '#9B4F96', secondary: '#239120', rgb: '155, 79, 150' },
+  ruby: { icon: 'Rb', primary: '#CC342D', secondary: '#F06D65', rgb: '204, 52, 45' },
+  php: { icon: 'php', primary: '#777BB4', secondary: '#B0B3D6', rgb: '119, 123, 180' },
+  java: { image: javaLogo, primary: '#E76F00', secondary: '#5382A1', rgb: '231, 111, 0' },
+  dart: { logo: siDart, primary: '#0175C2', secondary: '#13B9FD', rgb: '1, 117, 194' },
+  swift: { logo: siSwift, primary: '#F05138', secondary: '#FFAC45', rgb: '240, 81, 56' },
+};
 
 const starterCode = `def greet(name):
     message = "Hello, " + name
@@ -13,17 +30,202 @@ const starterCode = `def greet(name):
 
 greet("world")`;
 
-function Editor({ value, onChange, language, readOnly = false }) {
+const DSA_EXAMPLES = [
+  {
+    id: 'two-sum',
+    title: 'Two Sum',
+    topic: 'Arrays · Hash map',
+    complexity: 'O(n) time',
+    code: `def two_sum(nums, target):
+    seen = {}
+
+    for index, value in enumerate(nums):
+        complement = target - value
+        if complement in seen:
+            return [seen[complement], index]
+        seen[value] = index
+
+    return []`,
+  },
+  {
+    id: 'binary-search',
+    title: 'Binary Search',
+    topic: 'Arrays · Search',
+    complexity: 'O(log n) time',
+    code: `def binary_search(nums, target):
+    left, right = 0, len(nums) - 1
+
+    while left <= right:
+        middle = (left + right) // 2
+        if nums[middle] == target:
+            return middle
+        if nums[middle] < target:
+            left = middle + 1
+        else:
+            right = middle - 1
+
+    return -1`,
+  },
+  {
+    id: 'valid-parentheses',
+    title: 'Valid Parentheses',
+    topic: 'Strings · Stack',
+    complexity: 'O(n) time',
+    code: `def is_valid_parentheses(text):
+    pairs = {')': '(', ']': '[', '}': '{'}
+    stack = []
+
+    for character in text:
+        if character in pairs.values():
+            stack.append(character)
+        elif not stack or stack.pop() != pairs[character]:
+            return False
+
+    return not stack`,
+  },
+];
+
+function themeFor(language) {
+  return LANGUAGE_THEMES[language] ?? LANGUAGE_THEMES.javascript;
+}
+
+function themeVariables(prefix, theme) {
+  return {
+    [`--${prefix}-accent`]: theme.primary,
+    [`--${prefix}-secondary`]: theme.secondary,
+    [`--${prefix}-rgb`]: theme.rgb,
+  };
+}
+
+function shouldCopySourceUnchanged(sourceLanguage, targetLanguage, detected) {
+  if (sourceLanguage === targetLanguage) return true;
+  return sourceLanguage === 'auto'
+    && detected.confidence > 90
+    && detected.language === targetLanguage;
+}
+
+function LanguageBadge({ language, side }) {
+  const theme = themeFor(language);
+  return (
+    <span className={`language-icon ${side}-language-icon`} style={{ color: theme.primary }} aria-hidden="true">
+      {theme.image
+        ? <img src={theme.image} alt="" />
+        : theme.logo
+          ? <svg viewBox="0 0 24 24" focusable="false"><path d={theme.logo.path} fill="currentColor" /></svg>
+          : <span>{theme.icon}</span>}
+    </span>
+  );
+}
+
+function LanguageSelect({ id, label, value, options, side, onChange }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef(null);
+  const triggerRef = useRef(null);
+  const optionRefs = useRef([]);
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === value));
+  const selected = options[selectedIndex] ?? options[0];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const closeOnOutsidePress = (event) => {
+      if (!rootRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePress);
+    document.addEventListener('keydown', closeOnEscape);
+    window.requestAnimationFrame(() => optionRefs.current[selectedIndex]?.focus());
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePress);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open, selectedIndex]);
+
+  function choose(option) {
+    onChange(option.value);
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  function navigateOptions(event) {
+    if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    const focusedIndex = optionRefs.current.indexOf(document.activeElement);
+    const nextIndex = event.key === 'Home'
+      ? 0
+      : event.key === 'End'
+        ? options.length - 1
+        : event.key === 'ArrowDown'
+          ? (focusedIndex + 1 + options.length) % options.length
+          : (focusedIndex - 1 + options.length) % options.length;
+    optionRefs.current[nextIndex]?.focus();
+  }
+
+  return (
+    <div className={`language-picker ${open ? 'is-open' : ''}`} ref={rootRef}>
+      <button
+        ref={triggerRef}
+        id={id}
+        className="language-trigger"
+        type="button"
+        aria-label={label}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <LanguageBadge language={selected.language} side={side} />
+        <span className="language-trigger-label">{selected.label}</span>
+        <span className="language-chevron" aria-hidden="true">⌄</span>
+      </button>
+      {open && (
+        <div className="language-options" role="listbox" aria-label={label} onKeyDown={navigateOptions}>
+          {options.map((option, index) => (
+            <button
+              ref={(node) => { optionRefs.current[index] = node; }}
+              type="button"
+              role="option"
+              aria-selected={option.value === value}
+              className={option.value === value ? 'is-selected' : ''}
+              key={option.value}
+              onClick={() => choose(option)}
+            >
+              <LanguageBadge language={option.language} side={side} />
+              <span>{option.label}</span>
+              <i aria-hidden="true">{option.value === value ? '✓' : ''}</i>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Editor({ value, onChange, language, readOnly = false, onCursorChange }) {
   const extension = language === 'python' ? python() : javascript();
   return (
     <CodeMirror
       value={value}
-      height="390px"
+      height="430px"
       theme="dark"
       extensions={[extension]}
       editable={!readOnly}
       onChange={onChange}
-      basicSetup={{ lineNumbers: true, foldGutter: true, autocompletion: true }}
+      onUpdate={(update) => {
+        if (!onCursorChange || !update.selectionSet) return;
+        const head = update.state.selection.main.head;
+        const line = update.state.doc.lineAt(head);
+        onCursorChange({ line: line.number, column: head - line.from + 1 });
+      }}
+      basicSetup={{ lineNumbers: true, foldGutter: true, autocompletion: true, highlightActiveLine: true }}
     />
   );
 }
@@ -34,17 +236,88 @@ function App() {
   const [targetLanguage, setTargetLanguage] = useState('javascript');
   const [output, setOutput] = useState('');
   const [copied, setCopied] = useState(false);
-  const [engineStatus, setEngineStatus] = useState('Wasm engine ready');
+  const [isTranslating, setIsTranslating] = useState(false);
+  const [benchmark, setBenchmark] = useState('Ready');
+  const [sourceCursor, setSourceCursor] = useState({ line: 1, column: 1 });
+  const [outputCursor, setOutputCursor] = useState({ line: 1, column: 1 });
+  const [engineStatus, setEngineStatus] = useState('Ready');
+  const [pendingExample, setPendingExample] = useState(null);
+  const [exampleNotice, setExampleNotice] = useState(null);
+
   const detected = useMemo(() => detectLanguage(source), [source]);
   const activeSourceLanguage = sourceLanguage === 'auto' ? detected.language : sourceLanguage;
+  const sourceTheme = themeFor(activeSourceLanguage);
+  const targetTheme = themeFor(targetLanguage);
+  const sourceMismatch = sourceLanguage !== 'auto' && detected.reliable && detected.language !== sourceLanguage;
+  const detectionUncertain = Boolean(source.trim()) && !detected.reliable;
+  const copySourceUnchanged = shouldCopySourceUnchanged(sourceLanguage, targetLanguage, detected);
+  const sourceValidationMessage = sourceMismatch
+    ? `This appears to be ${LANGUAGE_META[detected.language].name}. Select the correct source language or provide ${LANGUAGE_META[sourceLanguage].name} code.`
+    : detectionUncertain
+      ? 'Language detection is uncertain. Select the input language before converting.'
+      : null;
+  const shellTheme = {
+    ...themeVariables('source', sourceTheme),
+    ...themeVariables('target', targetTheme),
+  };
+  const sourceLanguageOptions = [
+    { value: 'auto', label: `Auto · ${LANGUAGE_META[detected.language].name}`, language: detected.language },
+    ...Object.entries(LANGUAGE_META).map(([id, meta]) => ({ value: id, label: meta.name, language: id })),
+  ];
+  const targetLanguageOptions = Object.entries(LANGUAGE_META)
+    .map(([id, meta]) => ({ value: id, label: meta.name, language: id }));
 
-  async function convert() {
+  useEffect(() => {
+    if (!copySourceUnchanged) return;
+    setOutput(source);
+    setBenchmark('No changes needed');
+    setEngineStatus('Languages match');
+  }, [copySourceUnchanged, source]);
+
+  useEffect(() => {
+    if (!exampleNotice) return undefined;
+    const timeout = window.setTimeout(() => setExampleNotice(null), 5200);
+    return () => window.clearTimeout(timeout);
+  }, [exampleNotice]);
+
+  useEffect(() => {
+    if (!pendingExample) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') setPendingExample(null);
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [pendingExample]);
+
+  async function convert(nextTargetLanguage = targetLanguage) {
+    if (shouldCopySourceUnchanged(sourceLanguage, nextTargetLanguage, detected)) {
+      setOutput(source);
+      setBenchmark('No changes needed');
+      setEngineStatus('Languages match');
+      return;
+    }
+    if (sourceMismatch) {
+      setEngineStatus(sourceValidationMessage);
+      return;
+    }
+    const startedAt = performance.now();
+    setIsTranslating(true);
     setEngineStatus('Translating…');
     try {
-      setOutput(await transpile(source, activeSourceLanguage, targetLanguage));
-      setEngineStatus('Translated locally with Rust + Wasm');
+      setOutput(await transpile(source, activeSourceLanguage, nextTargetLanguage));
+      const elapsed = performance.now() - startedAt;
+      setBenchmark(`${Math.max(elapsed, 0.1).toFixed(1)} ms`);
+      setEngineStatus('Translation ready');
     } catch (error) {
-      setEngineStatus(error.message);
+      setEngineStatus('Translation unavailable');
+      setBenchmark('Couldn’t translate');
+    } finally {
+      setIsTranslating(false);
     }
   }
 
@@ -55,70 +328,176 @@ function App() {
     window.setTimeout(() => setCopied(false), 1600);
   }
 
+  function loadExample(example) {
+    setSource(example.code);
+    setSourceLanguage('python');
+    setOutput('');
+    setBenchmark('Ready');
+    setEngineStatus('Example loaded');
+    setSourceCursor({ line: 1, column: 1 });
+    setOutputCursor({ line: 1, column: 1 });
+    setExampleNotice({
+      title: `${example.title} is ready`,
+      message: 'Select a target language to translate.',
+    });
+    window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
+  }
+
+  function requestExample(example) {
+    if (source.trim()) {
+      setPendingExample(example);
+      return;
+    }
+    loadExample(example);
+  }
+
+  function confirmExample() {
+    if (!pendingExample) return;
+    const example = pendingExample;
+    setPendingExample(null);
+    loadExample(example);
+  }
+
   return (
-    <main className="shell">
+    <main className="app-shell" style={shellTheme}>
+      <div className="mesh-background" aria-hidden="true">
+        <span className="mesh-blob mesh-source" />
+        <span className="mesh-blob mesh-target" />
+        <span className="mesh-blob mesh-blend" />
+        <span className="mesh-blob mesh-highlight" />
+        <span className="mesh-wave mesh-wave-one" />
+        <span className="mesh-wave mesh-wave-two" />
+        <span className="mesh-wave mesh-wave-three" />
+      </div>
+
+      {exampleNotice && (
+        <div className="example-notice" role="status" aria-live="polite">
+          <span className="example-notice-icon" aria-hidden="true">✓</span>
+          <span className="example-notice-copy"><strong>{exampleNotice.title}</strong><small>{exampleNotice.message}</small></span>
+          <button type="button" onClick={() => setExampleNotice(null)} aria-label="Dismiss message">×</button>
+        </div>
+      )}
+
       <nav className="topbar">
         <a className="brand" href="#top" aria-label="TranslateCode home">
-          <span className="brand-mark">T</span>
+          <span className="brand-mark"><img src="/translatecode-mark.svg" alt="" /></span>
           <span>Translate<span className="brand-light">Code</span></span>
         </a>
-        <div className="nav-note"><span className="pulse" /> {engineStatus}</div>
+        <div className="nav-status" role="status" aria-live="polite"><span className="pulse" /><span>{engineStatus}</span></div>
       </nav>
 
       <section className="hero" id="top">
-        <div>
-          <p className="eyebrow">The universal code translator</p>
-          <h1>Write once.<br /><em>Translate anywhere.</em></h1>
+        <div className="hero-copy-block">
+          <p className="eyebrow"><span>TC</span> Built for developers</p>
+          <h1>Translate code.<br /><em>Keep the intent.</em></h1>
         </div>
-        <p className="hero-copy">Convert core programming constructs between modern languages, privately and instantly. No server. No uploads. Just your code, in your browser.</p>
+        <div className="hero-aside">
+          <p>Move between programming languages with a focused workspace designed for clear, consistent results.</p>
+          <div className="hero-metrics"><span><b>Source-aware</b> input</span><span><b>Target-ready</b> output</span></div>
+        </div>
       </section>
 
-      <section className="translator-card" aria-label="Code translator">
+      <section className="translator-shell" aria-label="Code translator">
         <div className="pane-grid">
-          <section className="pane">
+          <section className="editor-pane source-pane">
             <header className="pane-header">
-              <div className="language-control">
-                <label htmlFor="source-language">From</label>
-                <select id="source-language" value={sourceLanguage} onChange={(event) => setSourceLanguage(event.target.value)}>
-                  <option value="auto">Auto-Detect</option>
-                  {Object.entries(LANGUAGE_META).map(([id, meta]) => <option value={id} key={id}>{meta.name}</option>)}
-                </select>
+              <div className="pane-title-row">
+                <span className="pane-kicker">Source</span>
+                <LanguageSelect id="source-language" label="Source language" value={sourceLanguage} options={sourceLanguageOptions} side="source" onChange={setSourceLanguage} />
               </div>
-              <span className="detected">{sourceLanguage === 'auto' ? `${detected.confidence}% match · ${LANGUAGE_META[detected.language].name}` : 'Manual selection'}</span>
+              <div className="pane-meta">
+                <span className={`confidence-pill ${sourceValidationMessage ? 'confidence-error' : ''}`}>{sourceLanguage === 'auto' ? `${detected.confidence}% confidence` : 'selected'}</span>
+                <span className="cursor-position">Ln {sourceCursor.line}, Col {sourceCursor.column}</span>
+              </div>
             </header>
-            <Editor value={source} onChange={setSource} language={activeSourceLanguage} />
-            <footer className="pane-footer"><span>Input</span><span>{source.split('\n').length} lines</span></footer>
+            <div className="editor-surface">
+              <Editor value={source} onChange={setSource} language={activeSourceLanguage} onCursorChange={setSourceCursor} />
+            </div>
+            {sourceValidationMessage && <p className="validation-message" role="alert">{sourceValidationMessage}</p>}
+            <footer className="pane-footer"><span>SOURCE / UTF-8</span><span>{source.split('\n').length} lines · {source.length} characters</span></footer>
           </section>
 
-          <div className="swap-rail" aria-hidden="true"><span>→</span></div>
+          <div className="pipeline-connector" aria-hidden="true"><span className="translation-arrow">→</span></div>
 
-          <section className="pane output-pane">
+          <section className="editor-pane output-pane">
             <header className="pane-header">
-              <div className="language-control">
-                <label htmlFor="target-language">To</label>
-                <select id="target-language" value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)}>
-                  {Object.entries(LANGUAGE_META).map(([id, meta]) => <option value={id} key={id}>{meta.name}</option>)}
-                </select>
+              <div className="pane-title-row">
+                <span className="pane-kicker">Target</span>
+                <LanguageSelect id="target-language" label="Target language" value={targetLanguage} options={targetLanguageOptions} side="target" onChange={(nextTargetLanguage) => {
+                    setTargetLanguage(nextTargetLanguage);
+                    convert(nextTargetLanguage);
+                  }} />
               </div>
-              <button className="copy-button" onClick={copyCode} disabled={!output}>{copied ? 'Copied ✓' : 'Copy code'}</button>
+              <div className="pane-meta">
+                <span className="benchmark-pill"><i />{benchmark}</span>
+                <button className={`copy-button ${copied ? 'is-copied' : ''}`} onClick={copyCode} disabled={!output}>
+                  <span className="copy-glyph" aria-hidden="true">{copied ? '✓' : '⧉'}</span>{copied ? 'Copied' : 'Copy code'}
+                </button>
+              </div>
             </header>
-            {output ? <Editor value={output} onChange={() => {}} language={targetLanguage} readOnly /> : <div className="empty-output"><span className="empty-icon">↗</span><p>Your translated code<br />will appear here.</p></div>}
-            <footer className="pane-footer"><span>Output</span><span>{output ? `${output.split('\n').length} lines` : 'Ready when you are'}</span></footer>
+            <div className="editor-surface output-surface">
+              {output
+                ? <Editor value={output} onChange={() => {}} language={targetLanguage} readOnly onCursorChange={setOutputCursor} />
+                : <div className="empty-output"><div className="empty-orbit"><span aria-hidden="true">{'</>'}</span></div><strong>Ready to translate</strong><p>Your translated code will appear here.</p></div>}
+            </div>
+            <footer className="pane-footer"><span>RESULT / {LANGUAGE_META[targetLanguage].extension.toUpperCase()}</span><span>{output ? `Ln ${outputCursor.line}, Col ${outputCursor.column}` : 'Ready when you are'}</span></footer>
           </section>
         </div>
-        <div className="action-row">
-          <span className="pipeline-note"><span className="spark">✦</span> AST → IR → emitter</span>
-          <button className="convert-button" onClick={convert}>Convert code <span>Rust / Wasm</span></button>
+
+        <div className="action-bar">
+          <div className="pipeline-status"><span className="pipeline-led" /><b>Source</b><i>→</i><b>Translate</b><i>→</i><b>Result</b><span className="privacy-note">Processed privately</span></div>
+          <button className={`convert-button ${isTranslating ? 'is-loading' : ''}`} onClick={() => convert()} disabled={isTranslating}>
+            <span>{isTranslating ? 'Translating…' : copySourceUnchanged ? 'Use source code' : 'Translate code'}</span>
+            <i aria-hidden="true">{isTranslating ? '···' : '⌘ ↵'}</i>
+          </button>
         </div>
       </section>
 
-      <section className="feature-strip">
-        <div><span className="feature-number">01</span><strong>Parse locally</strong><p>A Rust/Wasm parser turns your source into a structured, language-neutral tree.</p></div>
-        <div><span className="feature-number">02</span><strong>Normalize once</strong><p>A small intermediate representation keeps translations predictable.</p></div>
-        <div><span className="feature-number">03</span><strong>Emit cleanly</strong><p>Language-specific emitters produce readable, idiomatic starter code.</p></div>
+      <section className="examples-section" aria-labelledby="examples-title">
+        <header className="examples-heading">
+          <div><span>Python examples</span><h2 id="examples-title">Start with a familiar problem.</h2></div>
+          <p>Load a complete DSA solution into the workspace, choose your target language, and continue from there.</p>
+        </header>
+        <div className="example-grid">
+          {DSA_EXAMPLES.map((example) => (
+            <article className="example-card" key={example.id}>
+              <header className="example-card-header">
+                <div><span>{example.topic}</span><h3>{example.title}</h3></div>
+                <small>{example.complexity}</small>
+              </header>
+              <pre aria-label={`${example.title} Python code`}>
+                {example.code.split('\n').map((line, index) => (
+                  <span className="example-code-line" key={`${example.id}-${index}`}>
+                    <i>{String(index + 1).padStart(2, '0')}</i><code>{line || ' '}</code>
+                  </span>
+                ))}
+              </pre>
+              <footer className="example-card-footer">
+                <span>Python</span>
+                <button type="button" onClick={() => requestExample(example)}>Translate <i aria-hidden="true">↗</i></button>
+              </footer>
+            </article>
+          ))}
+        </div>
       </section>
 
-      <footer className="site-footer"><span>TranslateCode / 2026</span><span>Private by design · Built for the curious</span></footer>
+      <footer className="site-footer"><span>TranslateCode</span><span>Code translation, made clear.</span></footer>
+
+      {pendingExample && (
+        <div className="confirmation-layer" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setPendingExample(null);
+        }}>
+          <section className="confirmation-dialog" role="dialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-copy">
+            <span className="confirmation-eyebrow">Replace source code</span>
+            <h2 id="confirmation-title">Clear your current code?</h2>
+            <p id="confirmation-copy">Loading <strong>{pendingExample.title}</strong> will replace everything currently in the Source editor.</p>
+            <div className="confirmation-actions">
+              <button type="button" className="confirmation-cancel" onClick={() => setPendingExample(null)}>Keep current code</button>
+              <button type="button" className="confirmation-confirm" onClick={confirmExample}>Clear and load example</button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

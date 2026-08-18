@@ -1,0 +1,10 @@
+hello Ada@example.dev
+hello Guest@example.dev
+name[0]=Ada
+name[1]=Guest
+privileged
+1:administrator:42
+sum=3
+score=42
+success:7
+done:2026-01-01

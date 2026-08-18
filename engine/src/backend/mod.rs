@@ -1,4 +1,5 @@
 pub mod java;
+pub mod python;
 
 use crate::diagnostic::Diagnostic;
 use crate::typed_ir::CompilationUnit;

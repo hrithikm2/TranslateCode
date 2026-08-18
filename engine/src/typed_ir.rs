@@ -2,8 +2,20 @@ use crate::diagnostic::{Diagnostic, SourceSpan};
 
 #[derive(Clone, Debug, Default)]
 pub struct CompilationUnit {
+    /// Imports are retained separately from declarations because they describe
+    /// the source project's external API surface.
+    pub imports: Vec<ImportDeclaration>,
     pub declarations: Vec<Declaration>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImportDeclaration {
+    pub uri: String,
+    pub prefix: Option<String>,
+    pub show: Vec<String>,
+    pub hide: Vec<String>,
+    pub span: SourceSpan,
 }
 
 #[derive(Clone, Debug)]
@@ -61,7 +73,10 @@ pub enum ClassMember {
     Getter(FunctionDeclaration),
     Setter(FunctionDeclaration),
     Operator(FunctionDeclaration),
-    Unlowered { syntax_kind: String, span: SourceSpan },
+    Unlowered {
+        syntax_kind: String,
+        span: SourceSpan,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -70,7 +85,7 @@ pub struct FieldDeclaration {
     pub type_ref: TypeReference,
     pub is_static: bool,
     pub is_final: bool,
-    pub initializer: Option<UnloweredBody>,
+    pub initializer: Option<Body>,
     pub span: SourceSpan,
 }
 
@@ -81,7 +96,9 @@ pub struct ConstructorDeclaration {
     pub parameters: Vec<Parameter>,
     pub is_const: bool,
     pub is_factory: bool,
-    pub body: Option<UnloweredBody>,
+    pub body: Option<Body>,
+    /// Lossless constructor text retained for initializer-list and redirect lowering.
+    pub source: String,
     pub span: SourceSpan,
 }
 
@@ -93,7 +110,7 @@ pub struct FunctionDeclaration {
     pub parameters: Vec<Parameter>,
     pub is_async: bool,
     pub is_static: bool,
-    pub body: Option<UnloweredBody>,
+    pub body: Option<Body>,
     pub span: SourceSpan,
 }
 
@@ -103,12 +120,17 @@ pub struct Parameter {
     pub type_ref: TypeReference,
     pub kind: ParameterKind,
     pub is_required: bool,
-    pub default_value: Option<UnloweredBody>,
+    pub default_value: Option<Expression>,
     pub span: SourceSpan,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ParameterKind { #[default] Positional, OptionalPositional, Named }
+pub enum ParameterKind {
+    #[default]
+    Positional,
+    OptionalPositional,
+    Named,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct EnumDeclaration {
@@ -148,12 +170,264 @@ pub struct TypeReference {
 }
 
 impl TypeReference {
-    pub fn dynamic() -> Self { Self { name: "dynamic".into(), arguments: Vec::new(), nullable: false } }
+    pub fn dynamic() -> Self {
+        Self {
+            name: "dynamic".into(),
+            arguments: Vec::new(),
+            nullable: false,
+        }
+    }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct UnloweredBody {
+#[derive(Clone, Debug)]
+pub struct Body {
+    pub kind: BodyKind,
     pub source: String,
     pub syntax_kind: String,
     pub span: SourceSpan,
+}
+
+impl Default for Body {
+    fn default() -> Self {
+        Self {
+            kind: BodyKind::Empty,
+            source: String::new(),
+            syntax_kind: String::new(),
+            span: SourceSpan::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum BodyKind {
+    Empty,
+    Block(Vec<Statement>),
+    Expression(Expression),
+    Unlowered,
+}
+
+#[derive(Clone, Debug)]
+pub struct Statement {
+    pub kind: StatementKind,
+    pub source: String,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub enum StatementKind {
+    Block(Vec<Statement>),
+    Variable {
+        name: String,
+        type_ref: TypeReference,
+        is_final: bool,
+        initializer: Option<Expression>,
+    },
+    Expression(Expression),
+    If {
+        condition: Expression,
+        then_branch: Box<Statement>,
+        else_branch: Option<Box<Statement>>,
+    },
+    ForEach {
+        variable: String,
+        iterable: Expression,
+        body: Box<Statement>,
+    },
+    While {
+        condition: Expression,
+        body: Box<Statement>,
+    },
+    DoWhile {
+        body: Box<Statement>,
+        condition: Expression,
+    },
+    Switch {
+        expression: Expression,
+        cases: Vec<SwitchCase>,
+    },
+    Try {
+        body: Box<Statement>,
+        catches: Vec<CatchClause>,
+        finally_body: Option<Box<Statement>>,
+    },
+    Return(Option<Expression>),
+    Throw(Expression),
+    Assert(Expression),
+    Break,
+    Continue,
+    Unlowered {
+        syntax_kind: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct SwitchCase {
+    pub pattern: Pattern,
+    pub statements: Vec<Statement>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub struct CatchClause {
+    pub exception_type: Option<TypeReference>,
+    pub exception_name: Option<String>,
+    pub stack_name: Option<String>,
+    pub body: Box<Statement>,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub struct Expression {
+    pub kind: ExpressionKind,
+    pub source: String,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExpressionKind {
+    Identifier(String),
+    Literal(Literal),
+    StringInterpolation(Vec<StringPart>),
+    Binary {
+        operator: String,
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Unary {
+        operator: String,
+        operand: Box<Expression>,
+    },
+    Assignment {
+        target: Box<Expression>,
+        operator: String,
+        value: Box<Expression>,
+    },
+    Member {
+        object: Box<Expression>,
+        property: String,
+        null_aware: bool,
+    },
+    Index {
+        object: Box<Expression>,
+        index: Box<Expression>,
+        null_aware: bool,
+    },
+    Call {
+        callee: Box<Expression>,
+        arguments: Vec<Argument>,
+        type_arguments: Vec<TypeReference>,
+    },
+    ObjectCreation {
+        type_ref: TypeReference,
+        constructor: Option<String>,
+        arguments: Vec<Argument>,
+        is_const: bool,
+    },
+    ListLiteral {
+        element_type: Option<TypeReference>,
+        elements: Vec<CollectionElement>,
+    },
+    MapLiteral {
+        key_type: Option<TypeReference>,
+        value_type: Option<TypeReference>,
+        entries: Vec<(Expression, Expression)>,
+    },
+    Closure {
+        parameters: Vec<Parameter>,
+        body: Box<Body>,
+    },
+    IfNull {
+        left: Box<Expression>,
+        right: Box<Expression>,
+    },
+    Await(Box<Expression>),
+    Cast {
+        expression: Box<Expression>,
+        type_ref: TypeReference,
+    },
+    TypeTest {
+        expression: Box<Expression>,
+        type_ref: TypeReference,
+        negated: bool,
+    },
+    Cascade {
+        target: Box<Expression>,
+        sections: Vec<Expression>,
+    },
+    Switch {
+        expression: Box<Expression>,
+        cases: Vec<SwitchExpressionCase>,
+    },
+    Raw {
+        syntax_kind: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub enum Literal {
+    Null,
+    Bool(bool),
+    Integer(String),
+    Float(String),
+    String(String),
+    Symbol(String),
+}
+
+#[derive(Clone, Debug)]
+pub enum StringPart {
+    Text(String),
+    Expression(Expression),
+}
+
+#[derive(Clone, Debug)]
+pub struct Argument {
+    pub name: Option<String>,
+    pub value: Expression,
+}
+
+#[derive(Clone, Debug)]
+pub enum CollectionElement {
+    Expression(Expression),
+    Spread {
+        expression: Expression,
+        null_aware: bool,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct SwitchExpressionCase {
+    pub pattern: Pattern,
+    pub value: Expression,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub struct Pattern {
+    pub kind: PatternKind,
+    pub source: String,
+    pub span: SourceSpan,
+}
+
+#[derive(Clone, Debug)]
+pub enum PatternKind {
+    Constant(Expression),
+    Object {
+        type_ref: TypeReference,
+        fields: Vec<PatternField>,
+    },
+    Variable {
+        name: String,
+        is_final: bool,
+    },
+    Wildcard,
+    Default,
+    Raw {
+        syntax_kind: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct PatternField {
+    pub name: String,
+    pub binding: String,
 }
