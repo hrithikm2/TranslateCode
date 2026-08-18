@@ -605,21 +605,6 @@ fn call_target(callee: &Expression) -> (String, Vec<String>) {
     (emit_expression(callee), Vec::new())
 }
 
-fn emit_arguments(arguments: &[Argument]) -> String {
-    arguments
-        .iter()
-        .map(|argument| {
-            let value = emit_expression(&argument.value);
-            argument
-                .name
-                .as_ref()
-                .map(|name| format!("{}: {}", name, value))
-                .unwrap_or(value)
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn emit_invocation(callee: &str, arguments: &[Argument]) -> String {
     let values = arguments
         .iter()
@@ -633,7 +618,7 @@ fn emit_invocation(callee: &str, arguments: &[Argument]) -> String {
         })
         .collect::<Vec<_>>();
     let compact = values.join(", ");
-    if values.is_empty() || (callee.len() + compact.len() <= 88 && !compact.contains('\n')) {
+    if values.is_empty() || (callee.len() + compact.len() <= 60 && !compact.contains('\n')) {
         return format!("{}({})", callee, compact);
     }
     format!(
@@ -652,7 +637,7 @@ fn emit_invocation(callee: &str, arguments: &[Argument]) -> String {
 
 fn emit_collection(open: &str, close: &str, values: &[String]) -> String {
     let compact = values.join(", ");
-    if compact.len() <= 88 && !compact.contains('\n') {
+    if compact.len() <= 60 && !compact.contains('\n') {
         return format!("{}{}{}", open, compact, close);
     }
     format!(
@@ -713,7 +698,13 @@ fn indent(value: &str, level: usize) -> String {
     let prefix = "  ".repeat(level);
     value
         .lines()
-        .map(|line| format!("{}{}", prefix, line))
+        .map(|line| {
+            if line.is_empty() {
+                String::new()
+            } else {
+                format!("{}{}", prefix, line)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n")
 }

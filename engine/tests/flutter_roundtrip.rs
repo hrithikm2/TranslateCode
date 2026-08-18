@@ -44,8 +44,8 @@ fn flutter_dependency_graph_survives_dart_python_dart_round_trip() {
     assert_eq!(dart_unit.imports.len(), 21, "{}", dart);
     for retained in [
         "Future<void> _initializeDependencies() async",
-        "Dio(BaseOptions(baseUrl: AppConstants.baseUrl",
-        "NewsRepositoryImpl(remoteDataSource: newsRemoteDataSource",
+        "baseUrl: AppConstants.baseUrl",
+        "remoteDataSource: newsRemoteDataSource",
         "Get.put<NewsRepository>(newsRepository)",
         "class FusionNewsApp extends StatelessWidget",
         "Widget build(BuildContext context)",
