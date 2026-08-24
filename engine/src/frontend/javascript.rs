@@ -17,6 +17,7 @@ impl Frontend for JavaScriptFrontend {
         };
         let root = tree.root_node();
         let mut unit = CompilationUnit::default();
+        unit.comments = common::collect_comments(root, source);
         common::collect_syntax_errors(root, source, language, &mut unit.diagnostics);
         for node in common::direct_named_children(root) {
             lower_top_level(node, source, &mut unit);
@@ -42,6 +43,17 @@ fn lower_top_level(node: Node<'_>, source: &str, unit: &mut CompilationUnit) {
                 lower_top_level(declaration, source, unit);
             }
         }
+        "lexical_declaration"
+        | "variable_declaration"
+        | "expression_statement"
+        | "if_statement"
+        | "for_statement"
+        | "for_in_statement"
+        | "while_statement" => unit.top_level_statements.push(common::lower_statement(
+            node,
+            source,
+            common::AstLanguage::JavaScript,
+        )),
         _ => {}
     }
 }
@@ -223,6 +235,16 @@ mod tests {
         ));
         assert!(unit.declarations.iter().any(
             |value| matches!(value, Declaration::Function(function) if function.name == "main")
+        ));
+    }
+
+    #[test]
+    fn retains_ordered_script_statements() {
+        let unit = JavaScriptFrontend.parse("let count = 0;\ncount++;\nconsole.log(count);\n");
+        assert_eq!(unit.top_level_statements.len(), 3, "{unit:#?}");
+        assert!(matches!(
+            unit.top_level_statements[0].kind,
+            crate::typed_ir::StatementKind::Variable { .. }
         ));
     }
 }

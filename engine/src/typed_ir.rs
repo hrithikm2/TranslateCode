@@ -2,11 +2,25 @@ use crate::diagnostic::{Diagnostic, SourceSpan};
 
 #[derive(Clone, Debug, Default)]
 pub struct CompilationUnit {
+    /// Source comments are retained verbatim with their original spans. They
+    /// remain language-neutral IR metadata until a backend selects the target
+    /// language's comment syntax.
+    pub comments: Vec<Comment>,
     /// Imports are retained separately from declarations because they describe
     /// the source project's external API surface.
     pub imports: Vec<ImportDeclaration>,
     pub declarations: Vec<Declaration>,
+    /// Executable source-level statements in their original order. Keeping
+    /// these separate from declarations lets script-oriented frontends retain
+    /// module initialization without pretending it is a declaration.
+    pub top_level_statements: Vec<Statement>,
     pub diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Comment {
+    pub text: String,
+    pub span: SourceSpan,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,6 +247,14 @@ pub enum StatementKind {
         iterable: Expression,
         body: Box<Statement>,
     },
+    /// A conventional three-part loop. Initializers and updates are vectors
+    /// because Java and Dart allow comma-separated clauses.
+    For {
+        initializers: Vec<Statement>,
+        condition: Option<Expression>,
+        updates: Vec<Expression>,
+        body: Box<Statement>,
+    },
     While {
         condition: Expression,
         body: Box<Statement>,
@@ -317,6 +339,11 @@ pub enum ExpressionKind {
         arguments: Vec<Argument>,
         type_arguments: Vec<TypeReference>,
     },
+    IntrinsicCall {
+        operation: IntrinsicOperation,
+        receiver: Box<Expression>,
+        arguments: Vec<Expression>,
+    },
     ObjectCreation {
         type_ref: TypeReference,
         constructor: Option<String>,
@@ -361,6 +388,12 @@ pub enum ExpressionKind {
     Raw {
         syntax_kind: String,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntrinsicOperation {
+    CollectionContains,
+    CollectionIndexOf,
 }
 
 #[derive(Clone, Debug)]

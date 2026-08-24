@@ -4,9 +4,9 @@ use tree_sitter::{Language as TreeSitterLanguage, Node, Parser, Tree};
 
 use crate::diagnostic::{Diagnostic, Severity, SourcePosition, SourceSpan};
 use crate::typed_ir::{
-    Argument, Body, BodyKind, CollectionElement, CompilationUnit, Expression, ExpressionKind,
-    FunctionDeclaration, Literal, Parameter, ParameterKind, Statement, StatementKind,
-    TypeReference,
+    Argument, Body, BodyKind, CollectionElement, Comment, CompilationUnit, Expression,
+    ExpressionKind, FunctionDeclaration, Literal, Parameter, ParameterKind, Statement,
+    StatementKind, TypeReference,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,8 +78,10 @@ pub(crate) fn syntax_tree(source: &str, language: AstLanguage) -> Result<Tree, C
 
 fn failed_unit(code: &'static str, message: &str) -> CompilationUnit {
     CompilationUnit {
+        comments: Vec::new(),
         imports: Vec::new(),
         declarations: Vec::new(),
+        top_level_statements: Vec::new(),
         diagnostics: vec![Diagnostic {
             code,
             severity: Severity::Error,
@@ -87,6 +89,27 @@ fn failed_unit(code: &'static str, message: &str) -> CompilationUnit {
             span: SourceSpan::default(),
         }],
     }
+}
+
+pub(crate) fn collect_comments(node: Node<'_>, source: &str) -> Vec<Comment> {
+    fn visit(node: Node<'_>, source: &str, comments: &mut Vec<Comment>) {
+        if node.kind().contains("comment") {
+            comments.push(Comment {
+                text: text(node, source).to_string(),
+                span: span(node),
+            });
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            visit(child, source, comments);
+        }
+    }
+
+    let mut comments = Vec::new();
+    visit(node, source, &mut comments);
+    comments.sort_by_key(|comment| comment.span.start.byte);
+    comments
 }
 
 pub(crate) fn lower_function(
@@ -272,7 +295,7 @@ pub(crate) fn lower_block(node: Node<'_>, source: &str, language: AstLanguage) -
         .collect()
 }
 
-fn lower_statement(node: Node<'_>, source: &str, language: AstLanguage) -> Statement {
+pub(crate) fn lower_statement(node: Node<'_>, source: &str, language: AstLanguage) -> Statement {
     let kind = match node.kind() {
         kind if is_block(kind) => StatementKind::Block(lower_block(node, source, language)),
         "lexical_declaration"
@@ -302,12 +325,10 @@ fn lower_statement(node: Node<'_>, source: &str, language: AstLanguage) -> State
         "for_in_statement" | "enhanced_for_statement" | "for_statement" | "for_expression" => {
             if is_for_each(node, language) {
                 lower_for_each(node, source, language)
-            } else if language == AstLanguage::Go {
+            } else if language == AstLanguage::Go && find_first(node, "for_clause").is_none() {
                 lower_while(node, source, language)
             } else {
-                StatementKind::Unlowered {
-                    syntax_kind: node.kind().into(),
-                }
+                lower_indexed_for(node, source, language)
             }
         }
         "while_statement" | "while_expression" => lower_while(node, source, language),
@@ -463,7 +484,67 @@ fn is_for_each(node: Node<'_>, language: AstLanguage) -> bool {
         AstLanguage::Go => find_first(node, "range_clause").is_some(),
         AstLanguage::JavaScript => node.kind() == "for_in_statement",
         AstLanguage::Java => node.kind() == "enhanced_for_statement",
-        AstLanguage::Python | AstLanguage::Dart | AstLanguage::Swift | AstLanguage::Rust => true,
+        AstLanguage::Dart => node.child_by_field_name("value").is_some(),
+        AstLanguage::Python | AstLanguage::Swift | AstLanguage::Rust => true,
+    }
+}
+
+fn lower_indexed_for(node: Node<'_>, source: &str, language: AstLanguage) -> StatementKind {
+    let clause = if language == AstLanguage::Go {
+        find_first(node, "for_clause").unwrap_or(node)
+    } else {
+        node
+    };
+    let initializer_field = match language {
+        AstLanguage::Java => "init",
+        AstLanguage::Dart => "init",
+        _ => "initializer",
+    };
+    let update_field = match language {
+        AstLanguage::Java | AstLanguage::Dart | AstLanguage::Go => "update",
+        _ => "increment",
+    };
+    let mut initializer_cursor = clause.walk();
+    let initializers = clause
+        .children_by_field_name(initializer_field, &mut initializer_cursor)
+        .filter(|value| value.kind() != "empty_statement")
+        .map(|value| {
+            if is_statement_kind(value.kind()) {
+                lower_statement(value, source, language)
+            } else {
+                statement(
+                    value,
+                    StatementKind::Expression(lower_expression(value, source, language)),
+                    source,
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    let condition = clause
+        .child_by_field_name("condition")
+        .filter(|value| value.kind() != "empty_statement")
+        .map(|value| lower_expression(unwrap_parenthesized(value), source, language));
+    let mut update_cursor = clause.walk();
+    let updates = clause
+        .children_by_field_name(update_field, &mut update_cursor)
+        .map(|value| lower_expression(value, source, language))
+        .collect::<Vec<_>>();
+    let body = node.child_by_field_name("body").or_else(|| {
+        direct_named_children(node)
+            .into_iter()
+            .rev()
+            .find(|child| is_block(child.kind()))
+    });
+    match body {
+        Some(body) => StatementKind::For {
+            initializers,
+            condition,
+            updates,
+            body: Box::new(lower_statement(body, source, language)),
+        },
+        None => StatementKind::Unlowered {
+            syntax_kind: node.kind().into(),
+        },
     }
 }
 
@@ -592,6 +673,25 @@ pub(crate) fn lower_expression(node: Node<'_>, source: &str, language: AstLangua
                 .map(|operand| ExpressionKind::Unary {
                     operator: operator_outside(node, operand, source),
                     operand: Box::new(lower_expression(operand, source, language)),
+                })
+                .unwrap_or_else(|| ExpressionKind::Raw {
+                    syntax_kind: node.kind().into(),
+                })
+        }
+        "update_expression" | "postfix_expression" | "inc_statement" | "dec_statement" => {
+            first_named_child(node)
+                .map(|operand| ExpressionKind::Assignment {
+                    target: Box::new(lower_expression(operand, source, language)),
+                    operator: if source_text.contains("--") {
+                        "-=".into()
+                    } else {
+                        "+=".into()
+                    },
+                    value: Box::new(Expression {
+                        kind: ExpressionKind::Literal(Literal::Integer("1".into())),
+                        source: "1".into(),
+                        span: span(node),
+                    }),
                 })
                 .unwrap_or_else(|| ExpressionKind::Raw {
                     syntax_kind: node.kind().into(),
@@ -1861,6 +1961,87 @@ mod tests {
         );
     }
 
+    #[test]
+    fn classic_loops_lower_to_indexed_for_ir() {
+        let cases = [
+            (
+                Language::JavaScript,
+                "function main() { for (let i = 0; i < 3; i++) { console.log(i); } }",
+            ),
+            (
+                Language::Java,
+                "class Demo { static void main(String[] args) { for (int i = 0; i < 3; i++) { System.out.println(i); } } }",
+            ),
+            (
+                Language::Dart,
+                "void main() { for (int i = 0; i < 3; i++) { print(i); } }",
+            ),
+            (
+                Language::Go,
+                "package main\nfunc main() { for i := 0; i < 3; i++ { println(i) } }",
+            ),
+        ];
+
+        for (language, source) in cases {
+            let unit = crate::frontend::parse_source(source, language);
+            let mut found = false;
+            for declaration in &unit.declarations {
+                audit_indexed_for_in_declaration(declaration, &mut found);
+            }
+            assert!(
+                found,
+                "{language:?} did not produce indexed For IR: {unit:#?}"
+            );
+        }
+    }
+
+    fn audit_indexed_for_in_declaration(declaration: &Declaration, found: &mut bool) {
+        let mut bodies = Vec::new();
+        match declaration {
+            Declaration::Function(value) => bodies.extend(value.body.iter()),
+            Declaration::Class(value) | Declaration::Mixin(value) => {
+                for member in &value.members {
+                    match member {
+                        ClassMember::Method(value)
+                        | ClassMember::Getter(value)
+                        | ClassMember::Setter(value)
+                        | ClassMember::Operator(value) => bodies.extend(value.body.iter()),
+                        ClassMember::Constructor(value) => bodies.extend(value.body.iter()),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+        for body in bodies {
+            if let BodyKind::Block(values) = &body.kind {
+                for value in values {
+                    audit_indexed_for_statement(value, found);
+                }
+            }
+        }
+    }
+
+    fn audit_indexed_for_statement(statement: &Statement, found: &mut bool) {
+        match &statement.kind {
+            StatementKind::For {
+                initializers,
+                condition,
+                updates,
+                body,
+            } => {
+                *found = !initializers.is_empty() && condition.is_some() && !updates.is_empty();
+                audit_indexed_for_statement(body, found);
+            }
+            StatementKind::Block(values) => {
+                for value in values {
+                    audit_indexed_for_statement(value, found);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn audit_declaration(declaration: &Declaration, audit: &mut Audit) {
         match declaration {
             Declaration::Function(function) => audit_function(function, audit),
@@ -1960,6 +2141,24 @@ mod tests {
                 audit_expression(iterable, audit);
                 audit_statement(body, audit);
             }
+            StatementKind::For {
+                initializers,
+                condition,
+                updates,
+                body,
+            } => {
+                audit.iterator = true;
+                for value in initializers {
+                    audit_statement(value, audit);
+                }
+                if let Some(value) = condition {
+                    audit_expression(value, audit);
+                }
+                for value in updates {
+                    audit_expression(value, audit);
+                }
+                audit_statement(body, audit);
+            }
             StatementKind::While { condition, body }
             | StatementKind::DoWhile { condition, body } => {
                 audit.while_loop = true;
@@ -2020,6 +2219,16 @@ mod tests {
                 audit_expression(callee, audit);
                 for argument in arguments {
                     audit_expression(&argument.value, audit);
+                }
+            }
+            ExpressionKind::IntrinsicCall {
+                receiver,
+                arguments,
+                ..
+            } => {
+                audit_expression(receiver, audit);
+                for argument in arguments {
+                    audit_expression(argument, audit);
                 }
             }
             ExpressionKind::Binary { left, right, .. } | ExpressionKind::IfNull { left, right } => {
@@ -2102,6 +2311,16 @@ mod tests {
                         visit_expression(&argument.value, visitor);
                     }
                 }
+                ExpressionKind::IntrinsicCall {
+                    receiver,
+                    arguments,
+                    ..
+                } => {
+                    visit_expression(receiver, visitor);
+                    for argument in arguments {
+                        visit_expression(argument, visitor);
+                    }
+                }
                 _ => {}
             }
         }
@@ -2131,6 +2350,23 @@ mod tests {
                 }
                 StatementKind::ForEach { iterable, body, .. } => {
                     visit_expression(iterable, visitor);
+                    visit_statement(body, visitor);
+                }
+                StatementKind::For {
+                    initializers,
+                    condition,
+                    updates,
+                    body,
+                } => {
+                    for value in initializers {
+                        visit_statement(value, visitor);
+                    }
+                    if let Some(value) = condition {
+                        visit_expression(value, visitor);
+                    }
+                    for value in updates {
+                        visit_expression(value, visitor);
+                    }
                     visit_statement(body, visitor);
                 }
                 StatementKind::While { condition, body }
@@ -2173,6 +2409,9 @@ mod tests {
                         .for_each(|value| visit_statement(value, visitor));
                 }
             }
+        }
+        for statement in &unit.top_level_statements {
+            visit_statement(statement, visitor);
         }
     }
 }

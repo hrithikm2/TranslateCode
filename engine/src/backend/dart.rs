@@ -1,8 +1,10 @@
-use crate::backend::{Backend, BackendOutput};
+use crate::backend::{
+    emit_comments, is_python_main_guard, unsupported_diagnostics, Backend, BackendOutput,
+};
 use crate::typed_ir::{
     Argument, Body, BodyKind, ClassDeclaration, ClassMember, CollectionElement, CompilationUnit,
-    Declaration, Expression, ExpressionKind, Literal, Parameter, ParameterKind, PatternKind,
-    Statement, StatementKind, StringPart, TypeReference,
+    Declaration, Expression, ExpressionKind, IntrinsicOperation, Literal, Parameter, ParameterKind,
+    PatternKind, Statement, StatementKind, StringPart, TypeReference,
 };
 
 /// Emits Dart exclusively from Universal IR. This is used for Python-to-Dart translation so
@@ -17,36 +19,62 @@ impl Backend for DartBackend {
             .filter(|value| !matches!(value.uri.as_str(), "__future__" | "typing"))
             .map(emit_import)
             .collect::<Vec<_>>();
-        let declarations = unit
+        let mut declarations = unit
             .declarations
             .iter()
             .filter_map(|declaration| {
-            let value = match declaration {
-                Declaration::Class(value) | Declaration::Mixin(value) => emit_class(value),
-                Declaration::Enum(value) => format!(
-                    "enum {} {{\n{}\n}}",
-                    value.name,
-                    indent(&value.values.join(",\n"), 1)
-                ),
-                Declaration::Extension(value) => format!(
-                    "extension {} on {} {{\n{}\n}}",
-                    value.name,
-                    emit_type(&value.on_type),
-                    emit_members(&value.members)
-                ),
-                Declaration::TypeAlias(value) => {
-                    format!(
-                        "typedef {} = {};",
+                let value = match declaration {
+                    Declaration::Class(value) | Declaration::Mixin(value) => emit_class(value),
+                    Declaration::Enum(value) => format!(
+                        "enum {} {{\n{}\n}}",
                         value.name,
-                        emit_type(&value.aliased_type)
-                    )
-                }
-                Declaration::Function(value) => emit_function(value, 0),
-            };
-            (!value.is_empty()).then_some(value)
+                        indent(&value.values.join(",\n"), 1)
+                    ),
+                    Declaration::Extension(value) => format!(
+                        "extension {} on {} {{\n{}\n}}",
+                        value.name,
+                        emit_type(&value.on_type),
+                        emit_members(&value.members)
+                    ),
+                    Declaration::TypeAlias(value) => {
+                        format!(
+                            "typedef {} = {};",
+                            value.name,
+                            emit_type(&value.aliased_type)
+                        )
+                    }
+                    Declaration::Function(value) => emit_function(value, 0),
+                };
+                (!value.is_empty()).then_some(value)
             })
             .collect::<Vec<_>>();
+        if !unit.top_level_statements.is_empty() {
+            let has_main = unit
+                .declarations
+                .iter()
+                .any(|value| matches!(value, Declaration::Function(value) if value.name == "main"));
+            declarations.push(format!(
+                "void {}() {{\n{}\n}}",
+                if has_main {
+                    "_runTopLevelStatements"
+                } else {
+                    "main"
+                },
+                indent(
+                    &unit
+                        .top_level_statements
+                        .iter()
+                        .filter(|value| !is_python_main_guard(value))
+                        .map(emit_statement)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    1
+                )
+            ));
+        }
         let code = [
+            (!unit.comments.is_empty())
+                .then(|| emit_comments(&unit.comments, crate::Language::Dart)),
             (!imports.is_empty()).then(|| imports.join("\n")),
             (!declarations.is_empty()).then(|| declarations.join("\n\n")),
         ]
@@ -56,7 +84,7 @@ impl Backend for DartBackend {
         .join("\n\n");
         BackendOutput {
             code,
-            diagnostics: Vec::new(),
+            diagnostics: unsupported_diagnostics(unit),
         }
     }
 }
@@ -176,7 +204,9 @@ fn emit_members(members: &[ClassMember]) -> String {
                         }
                     ))
                 }
-                ClassMember::Unlowered { .. } => None,
+                ClassMember::Unlowered { syntax_kind, .. } => {
+                    Some(format!("/* unsupported class member: {} */", syntax_kind))
+                }
             })
             .collect::<Vec<_>>()
             .join("\n\n"),
@@ -296,7 +326,8 @@ fn emit_body_or_empty(body: Option<&Body>) -> String {
 
 fn emit_body(body: &Body) -> String {
     match &body.kind {
-        BodyKind::Empty | BodyKind::Unlowered => String::new(),
+        BodyKind::Empty => String::new(),
+        BodyKind::Unlowered => format!("/* unsupported body: {} */", body.syntax_kind),
         BodyKind::Expression(value) => format!("return {};", emit_expression(value)),
         BodyKind::Block(values) => values
             .iter()
@@ -339,6 +370,9 @@ fn emit_statement(statement: &Statement) -> String {
                 .map(|value| format!(" = {}", emit_expression(value)))
                 .unwrap_or_default()
         ),
+        StatementKind::Expression(value) if matches!(&value.kind, ExpressionKind::Raw { .. }) => {
+            "/* unsupported expression statement */".into()
+        }
         StatementKind::Expression(value) => format!("{};", emit_expression(value)),
         StatementKind::Return(value) => format!(
             "return{};",
@@ -368,6 +402,26 @@ fn emit_statement(statement: &Statement) -> String {
             "for (final {} in {}) {}",
             variable,
             emit_expression(iterable),
+            emit_statement_block(body)
+        ),
+        StatementKind::For {
+            initializers,
+            condition,
+            updates,
+            body,
+        } => format!(
+            "for ({}; {}; {}) {}",
+            initializers
+                .iter()
+                .map(emit_for_initializer)
+                .collect::<Vec<_>>()
+                .join(", "),
+            condition.as_ref().map(emit_expression).unwrap_or_default(),
+            updates
+                .iter()
+                .map(emit_expression)
+                .collect::<Vec<_>>()
+                .join(", "),
             emit_statement_block(body)
         ),
         StatementKind::While { condition, body } => format!(
@@ -418,8 +472,14 @@ fn emit_statement(statement: &Statement) -> String {
         StatementKind::Assert(value) => format!("assert({});", emit_expression(value)),
         StatementKind::Break => "break;".into(),
         StatementKind::Continue => "continue;".into(),
-        StatementKind::Unlowered { .. } => String::new(),
+        StatementKind::Unlowered { syntax_kind } => {
+            format!("/* unsupported statement: {} */", syntax_kind)
+        }
     }
+}
+
+fn emit_for_initializer(statement: &Statement) -> String {
+    emit_statement(statement).trim_end_matches(';').to_string()
 }
 
 fn emit_statement_block(statement: &Statement) -> String {
@@ -527,6 +587,23 @@ fn emit_expression(expression: &Expression) -> String {
                 arguments,
             )
         }
+        ExpressionKind::IntrinsicCall {
+            operation,
+            receiver,
+            arguments,
+        } => format!(
+            "{}.{}({})",
+            emit_expression(receiver),
+            match operation {
+                IntrinsicOperation::CollectionContains => "contains",
+                IntrinsicOperation::CollectionIndexOf => "indexOf",
+            },
+            arguments
+                .iter()
+                .map(emit_expression)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ExpressionKind::ObjectCreation {
             type_ref,
             constructor,
@@ -591,7 +668,8 @@ fn emit_expression(expression: &Expression) -> String {
             emit_type(type_ref)
         ),
         ExpressionKind::Cascade { target, .. } => emit_expression(target),
-        ExpressionKind::Switch { .. } | ExpressionKind::Raw { .. } => expression.source.clone(),
+        ExpressionKind::Switch { .. } => expression.source.clone(),
+        ExpressionKind::Raw { .. } => "null /* unsupported expression */".into(),
     }
 }
 

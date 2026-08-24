@@ -20,6 +20,8 @@ fn flutter_dependency_graph_survives_dart_python_dart_round_trip() {
     assert!(python.contains("class FusionNewsApp(StatelessWidget):"));
     assert!(python.contains("def _buildTheme(self) -> ThemeData:"));
     assert!(python.contains("def _getPages(self) -> list[GetPage]:"));
+    assert!(python.contains("# Main entry point of the Fusion News application."));
+    assert!(python.contains("# Initialize all app dependencies."));
     assert!(
         !python.contains("baseUrl:"),
         "Dart named argument leaked into Python"
@@ -53,6 +55,8 @@ fn flutter_dependency_graph_survives_dart_python_dart_round_trip() {
         "List<GetPage> _getPages()",
         "final article = Get.arguments;",
         "Future<void> main() async",
+        "// Main entry point of the Fusion News application.",
+        "// Initialize all app dependencies.",
     ] {
         assert!(dart.contains(retained), "missing `{}`:\n{}", retained, dart);
     }

@@ -1,8 +1,11 @@
-use crate::backend::{Backend, BackendOutput};
+use crate::backend::{
+    emit_comments, is_python_main_guard, unsupported_diagnostics, Backend, BackendOutput,
+};
 use crate::typed_ir::{
     Argument, Body, BodyKind, ClassDeclaration, ClassMember, CollectionElement, CompilationUnit,
-    Declaration, Expression, ExpressionKind, FieldDeclaration, FunctionDeclaration, Literal,
-    Parameter, ParameterKind, Statement, StatementKind, StringPart, TypeReference,
+    Declaration, Expression, ExpressionKind, FieldDeclaration, FunctionDeclaration,
+    IntrinsicOperation, Literal, Parameter, ParameterKind, Statement, StatementKind, StringPart,
+    TypeReference,
 };
 
 /// Emits valid Python from Universal IR. Source-language spellings are never copied for nodes
@@ -12,10 +15,14 @@ pub struct PythonBackend;
 
 impl Backend for PythonBackend {
     fn emit(&self, unit: &CompilationUnit) -> BackendOutput {
-        let mut sections = vec![
+        let mut sections = Vec::new();
+        if !unit.comments.is_empty() {
+            sections.push(emit_comments(&unit.comments, crate::Language::Python));
+        }
+        sections.extend([
             "from __future__ import annotations".into(),
             "from typing import Any, Final".into(),
-        ];
+        ]);
         sections.extend(unit.imports.iter().map(emit_import));
 
         let mut entrypoint = None;
@@ -52,11 +59,27 @@ impl Backend for PythonBackend {
         }
         if let Some(entrypoint) = entrypoint {
             sections.push(entrypoint);
+        }
+        if !unit.top_level_statements.is_empty() {
+            sections.push(
+                unit.top_level_statements
+                    .iter()
+                    .filter(|value| !is_python_main_guard(value))
+                    .map(emit_statement)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+        if unit
+            .declarations
+            .iter()
+            .any(|value| matches!(value, Declaration::Function(value) if value.name == "main"))
+        {
             sections.push("if __name__ == \"__main__\":\n    main()".into());
         }
         BackendOutput {
             code: sections.join("\n\n"),
-            diagnostics: Vec::new(),
+            diagnostics: unsupported_diagnostics(unit),
         }
     }
 }
@@ -138,7 +161,9 @@ fn emit_class(class: &ClassDeclaration) -> String {
                     indent(&emit_body_or_pass(value.body.as_ref()), 1)
                 ))
             }
-            ClassMember::Unlowered { .. } => None,
+            ClassMember::Unlowered { syntax_kind, .. } => {
+                Some(format!("# unsupported class member: {}", syntax_kind))
+            }
         })
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
@@ -264,7 +289,8 @@ fn emit_body_or_pass(body: Option<&Body>) -> String {
 
 fn emit_body(body: &Body) -> String {
     match &body.kind {
-        BodyKind::Empty | BodyKind::Unlowered => String::new(),
+        BodyKind::Empty => String::new(),
+        BodyKind::Unlowered => format!("# unsupported body: {}", body.syntax_kind),
         BodyKind::Expression(value) => format!("return {}", emit_expression(value)),
         BodyKind::Block(values) => values
             .iter()
@@ -336,6 +362,34 @@ fn emit_statement(statement: &Statement) -> String {
             emit_expression(iterable),
             indent(&nonempty_statement(body), 1)
         ),
+        StatementKind::For {
+            initializers,
+            condition,
+            updates,
+            body,
+        } => {
+            let mut lines = initializers.iter().map(emit_statement).collect::<Vec<_>>();
+            let mut loop_body = nonempty_statement(body);
+            if !updates.is_empty() {
+                loop_body.push('\n');
+                loop_body.push_str(
+                    &updates
+                        .iter()
+                        .map(emit_expression)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                );
+            }
+            lines.push(format!(
+                "while {}:\n{}",
+                condition
+                    .as_ref()
+                    .map(emit_expression)
+                    .unwrap_or_else(|| "True".into()),
+                indent(&loop_body, 1)
+            ));
+            lines.join("\n")
+        }
         StatementKind::While { condition, body } => format!(
             "while {}:\n{}",
             emit_expression(condition),
@@ -347,8 +401,10 @@ fn emit_statement(statement: &Statement) -> String {
         StatementKind::Throw(value) => format!("raise {}", emit_expression(value)),
         StatementKind::DoWhile { .. }
         | StatementKind::Switch { .. }
-        | StatementKind::Try { .. }
-        | StatementKind::Unlowered { .. } => String::new(),
+        | StatementKind::Try { .. } => "# unsupported structured statement".into(),
+        StatementKind::Unlowered { syntax_kind } => {
+            format!("# unsupported statement: {}", syntax_kind)
+        }
     }
 }
 
@@ -450,6 +506,21 @@ fn emit_expression(expression: &Expression) -> String {
             },
             emit_arguments(arguments)
         ),
+        ExpressionKind::IntrinsicCall {
+            operation,
+            receiver,
+            arguments,
+        } => {
+            let receiver = emit_expression(receiver);
+            let first = arguments
+                .first()
+                .map(emit_expression)
+                .unwrap_or_else(|| "None".into());
+            match operation {
+                IntrinsicOperation::CollectionContains => format!("{} in {}", first, receiver),
+                IntrinsicOperation::CollectionIndexOf => format!("{}.index({})", receiver, first),
+            }
+        }
         ExpressionKind::ObjectCreation {
             type_ref,
             constructor,
@@ -507,7 +578,8 @@ fn emit_expression(expression: &Expression) -> String {
             emit_type_name(type_ref)
         ),
         ExpressionKind::Cascade { target, .. } => emit_expression(target),
-        ExpressionKind::Switch { .. } | ExpressionKind::Raw { .. } => expression.source.clone(),
+        ExpressionKind::Switch { .. } => expression.source.clone(),
+        ExpressionKind::Raw { .. } => "None".into(),
     }
 }
 
@@ -629,5 +701,56 @@ Future<void> initialize() async {
             output
         );
         assert!(!output.contains("<NewsRepository>"), "{}", output);
+    }
+
+    #[test]
+    fn emits_indexed_dart_loops_and_collection_intrinsics() {
+        let source = r#"class Solution {
+  List<int> twoSum(List<int> nums, int target) {
+    for (int i = 0; i < nums.length; i++) {
+      final offset = target - nums[i];
+      if (nums.contains(offset)) {
+        return [i, nums.indexOf(offset)];
+      }
+    }
+    return [];
+  }
+}"#;
+        let output = PythonBackend.emit(&DartFrontend.parse(source));
+        assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+        assert!(
+            output.code.contains("while i < len(nums):"),
+            "{}",
+            output.code
+        );
+        assert!(
+            output.code.contains("if offset in nums:"),
+            "{}",
+            output.code
+        );
+        assert!(
+            output.code.contains("return [i, nums.index(offset)]"),
+            "{}",
+            output.code
+        );
+        assert!(output.code.contains("i += 1"), "{}", output.code);
+        assert!(!output.code.contains("++i"), "{}", output.code);
+        assert!(!output.code.contains(".contains("), "{}", output.code);
+        assert!(!output.code.contains(".indexOf("), "{}", output.code);
+    }
+
+    #[test]
+    fn emits_dart_map_contains_key_as_python_membership() {
+        let source = r#"bool hasValue(Map<int, String> valuesMap, int num) {
+  return valuesMap.containsKey(num);
+}"#;
+        let output = PythonBackend.emit(&DartFrontend.parse(source));
+        assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+        assert!(
+            output.code.contains("return num in valuesMap"),
+            "{}",
+            output.code
+        );
+        assert!(!output.code.contains(".containsKey("), "{}", output.code);
     }
 }

@@ -18,6 +18,7 @@ impl Frontend for JavaFrontend {
         };
         let root = tree.root_node();
         let mut unit = CompilationUnit::default();
+        unit.comments = common::collect_comments(root, source);
         common::collect_syntax_errors(root, source, language, &mut unit.diagnostics);
         for node in common::direct_named_children(root) {
             match node.kind() {

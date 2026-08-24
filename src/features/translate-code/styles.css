@@ -169,7 +169,7 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 @keyframes meshRotate { to { transform: rotate(360deg) scale(1.08); } }
 
-.topbar, .hero, .translator-shell, .examples-section, .site-footer { position: relative; z-index: 2; }
+.topbar, .hero, .translator-shell, .use-cases-section, .examples-section, .site-footer { position: relative; z-index: 2; }
 
 .topbar {
   position: relative;
@@ -350,6 +350,30 @@ button { -webkit-tap-highlight-color: transparent; }
 .convert-button.is-loading { animation: loadingGlow 1.1s ease-in-out infinite alternate; }
 @keyframes loadingGlow { to { box-shadow: 0 0 30px rgba(91,104,226,.42); } }
 
+.use-cases-section { margin: 72px 0 0; }
+.use-cases-heading { padding-bottom: 25px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 430px); align-items: end; gap: 50px; border-bottom: 1px solid rgba(255,255,255,.09); }
+.use-cases-heading span { display: block; margin-bottom: 10px; color: var(--source-secondary); font: 500 9px 'DM Mono'; letter-spacing: .13em; text-transform: uppercase; }
+.use-cases-heading h2 { margin: 0; color: #efeff2; font: 600 clamp(28px, 3vw, 43px)/1.02 'Space Grotesk'; letter-spacing: -.045em; }
+.use-cases-heading p { max-width: 420px; margin: 0; color: #8d909a; font-size: 13px; line-height: 1.65; }
+.use-case-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid rgba(255,255,255,.09); }
+.use-case-card { position: relative; min-width: 0; padding: 27px 28px 29px; overflow: hidden; background: rgba(8,9,13,.34); }
+.use-case-card + .use-case-card { border-left: 1px solid rgba(255,255,255,.09); }
+.use-case-card::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; opacity: .72; }
+.use-case-ideal::before { background: #67e8a5; box-shadow: 0 0 18px rgba(103,232,165,.3); }
+.use-case-caution::before { background: #f1b86b; box-shadow: 0 0 18px rgba(241,184,107,.24); }
+.use-case-label { display: inline-flex; align-items: center; gap: 9px; color: #9ea1aa; font: 500 9px 'DM Mono'; letter-spacing: .1em; text-transform: uppercase; }
+.use-case-label i { width: 22px; height: 22px; display: grid; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-style: normal; }
+.use-case-ideal .use-case-label { color: #72dba4; }
+.use-case-caution .use-case-label { color: #d9aa6a; }
+.use-case-card h3 { margin: 20px 0 17px; color: #e7e8ec; font: 600 20px 'Space Grotesk'; letter-spacing: -.025em; }
+.use-case-card ul { margin: 0; padding: 0; display: grid; gap: 11px; list-style: none; }
+.use-case-card li { position: relative; padding-left: 17px; color: #92959f; font-size: 12px; line-height: 1.55; }
+.use-case-card li::before { content: ''; position: absolute; top: .62em; left: 0; width: 5px; height: 5px; border-radius: 50%; background: #555963; }
+.use-case-ideal li::before { background: rgba(103,232,165,.72); }
+.use-case-caution li::before { background: rgba(241,184,107,.68); }
+.use-cases-note { margin: 0; padding: 16px 3px 0; color: #686b75; font: 10px/1.6 'DM Mono'; }
+.use-cases-note strong { color: #9da0aa; font-weight: 500; }
+
 .examples-section { margin: 72px 0 64px; }
 .examples-heading { padding-bottom: 25px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 430px); align-items: end; gap: 50px; border-bottom: 1px solid rgba(255,255,255,.09); }
 .examples-heading span { display: block; margin-bottom: 10px; color: var(--source-secondary); font: 500 9px 'DM Mono'; letter-spacing: .13em; text-transform: uppercase; }
@@ -398,12 +422,18 @@ button { -webkit-tap-highlight-color: transparent; }
 @keyframes modalFade { from { opacity: 0; } }
 
 .site-footer { min-height: 62px; padding-top: 20px; display: flex; align-items: flex-start; justify-content: space-between; color: #454852; border-top: 1px solid rgba(255,255,255,.065); font: 9px 'DM Mono'; letter-spacing: .04em; }
+.site-footer a { display: inline-flex; align-items: center; gap: 7px; color: #777a86; text-decoration: none; transition: color .2s ease; }
+.site-footer a:hover { color: #c5c7cf; }
+.site-footer a:focus-visible { color: #fff; outline: 1px solid #8d90f5; outline-offset: 5px; border-radius: 2px; }
+.site-footer a i { color: #8d90f5; font-style: normal; }
 
 @media (max-width: 1120px) {
   .pane-grid { grid-template-columns: minmax(0, 1fr) 42px minmax(0, 1fr); }
   .cursor-position, .benchmark-pill { display: none; }
   .hero { gap: 44px; }
   .example-grid { grid-template-columns: 1fr; }
+  .use-case-grid { grid-template-columns: 1fr; }
+  .use-case-card + .use-case-card { border-top: 1px solid rgba(255,255,255,.09); border-left: 0; }
   .example-card { border-left: 0; border-top: 1px solid rgba(255,255,255,.09); }
   .example-card:first-child { border-top: 0; }
   .example-card pre { min-height: 0; max-height: 330px; }
@@ -444,8 +474,8 @@ button { -webkit-tap-highlight-color: transparent; }
     background: rgba(8,9,13,.94);
     backdrop-filter: blur(18px) saturate(120%);
   }
-  .examples-heading { grid-template-columns: 1fr; gap: 15px; }
-  .examples-heading p { max-width: 560px; }
+  .use-cases-heading, .examples-heading { grid-template-columns: 1fr; gap: 15px; }
+  .use-cases-heading p, .examples-heading p { max-width: 560px; }
   .example-card-footer button, .copy-button, .convert-button, .confirmation-actions button { min-height: 44px; }
   .confirmation-dialog { max-height: calc(100svh - 40px); overflow-y: auto; }
 }
@@ -515,10 +545,13 @@ button { -webkit-tap-highlight-color: transparent; }
   .action-bar { min-height: 68px; padding: 10px; }
   .pipeline-status { display: none; }
   .convert-button { width: 100%; min-width: 0; height: 48px; padding-inline: 16px 11px; }
+  .use-cases-section { margin-top: 48px; }
   .examples-section { margin-block: 48px; }
-  .examples-heading { padding-bottom: 20px; }
-  .examples-heading h2 { font-size: 31px; line-height: 1.06; }
-  .examples-heading p { font-size: 12px; }
+  .use-cases-heading, .examples-heading { padding-bottom: 20px; }
+  .use-cases-heading h2, .examples-heading h2 { font-size: 31px; line-height: 1.06; }
+  .use-cases-heading p, .examples-heading p { font-size: 12px; }
+  .use-case-card { padding: 23px 18px 25px; }
+  .use-case-card h3 { margin-top: 17px; font-size: 18px; }
   .example-card-header { padding-inline: 14px; }
   .example-card pre { max-height: 290px; font-size: 10px; }
   .example-code-line { padding-right: 12px; }
@@ -533,7 +566,8 @@ button { -webkit-tap-highlight-color: transparent; }
   .confirmation-actions { display: grid; }
   .confirmation-actions button { width: 100%; height: 46px; }
   .site-footer { min-height: 74px; display: block; padding-top: 18px; padding-bottom: env(safe-area-inset-bottom); line-height: 2; }
-  .site-footer span { display: block; }
+  .site-footer span, .site-footer a { display: flex; width: fit-content; }
+  .site-footer a { margin-top: 3px; }
 }
 
 @media (max-width: 380px) {

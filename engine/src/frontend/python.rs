@@ -18,6 +18,7 @@ impl Frontend for PythonFrontend {
         };
         let root = tree.root_node();
         let mut unit = CompilationUnit::default();
+        unit.comments = common::collect_comments(root, source);
         common::collect_syntax_errors(root, source, language, &mut unit.diagnostics);
         for node in common::direct_named_children(root) {
             lower_top_level(node, source, &mut unit);
@@ -48,7 +49,20 @@ fn lower_top_level(node: Node<'_>, source: &str, unit: &mut CompilationUnit) {
         "expression_statement" => {
             if let Some(alias) = lower_type_alias(node, source) {
                 unit.declarations.push(Declaration::TypeAlias(alias));
+            } else {
+                unit.top_level_statements.push(common::lower_statement(
+                    node,
+                    source,
+                    common::AstLanguage::Python,
+                ));
             }
+        }
+        "if_statement" | "for_statement" | "while_statement" | "try_statement" => {
+            unit.top_level_statements.push(common::lower_statement(
+                node,
+                source,
+                common::AstLanguage::Python,
+            ))
         }
         _ => {}
     }
@@ -265,5 +279,15 @@ mod tests {
             .declarations
             .iter()
             .any(|value| matches!(value, Declaration::Function(value) if value.name == "main")));
+    }
+
+    #[test]
+    fn retains_ordered_module_statements() {
+        let unit = PythonFrontend.parse("count = 0\ncount += 1\nprint(count)\n");
+        assert_eq!(unit.top_level_statements.len(), 3, "{unit:#?}");
+        assert!(matches!(
+            unit.top_level_statements[0].kind,
+            crate::typed_ir::StatementKind::Variable { .. }
+        ));
     }
 }

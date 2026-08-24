@@ -91,6 +91,7 @@ impl Language {
 
 #[derive(Clone, Debug, Default)]
 struct Program {
+    comments: Vec<crate::typed_ir::Comment>,
     body: Vec<Statement>,
     preserve_classes: bool,
 }
@@ -1184,6 +1185,9 @@ fn parse_brace_block(
 }
 
 fn parse(source: &str, language: Language, preserve_classes: bool) -> Program {
+    let comments = crate::frontend::parse_source(source, language).comments;
+    let stripped_source = strip_source_comments(source, &comments);
+    let source = stripped_source.as_str();
     let mut program = if language == Language::Python {
         let lines = source
             .lines()
@@ -1191,6 +1195,7 @@ fn parse(source: &str, language: Language, preserve_classes: bool) -> Program {
             .collect::<Vec<_>>();
         let mut index = 0;
         Program {
+            comments: comments.clone(),
             body: parse_python_block(&lines, &mut index, 0),
             preserve_classes,
         }
@@ -1198,6 +1203,7 @@ fn parse(source: &str, language: Language, preserve_classes: bool) -> Program {
         let lines = normalize_braces(source);
         let mut index = 0;
         Program {
+            comments,
             body: parse_brace_block(&lines, &mut index, language, false),
             preserve_classes,
         }
@@ -1228,6 +1234,19 @@ fn parse(source: &str, language: Language, preserve_classes: bool) -> Program {
     }
     normalize_scope_mutability(&mut program.body);
     program
+}
+
+fn strip_source_comments(source: &str, comments: &[crate::typed_ir::Comment]) -> String {
+    let mut bytes = source.as_bytes().to_vec();
+    for comment in comments {
+        let end = comment.span.end.byte.min(bytes.len());
+        for byte in &mut bytes[comment.span.start.byte.min(end)..end] {
+            if !matches!(*byte, b'\n' | b'\r') {
+                *byte = b' ';
+            }
+        }
+    }
+    String::from_utf8(bytes).expect("comment stripping preserves UTF-8")
 }
 
 fn normalize_scope_mutability(body: &mut [Statement]) {
@@ -2647,6 +2666,7 @@ fn emit(program: &Program, target: Language) -> String {
             }
         }
         Program {
+            comments: program.comments.clone(),
             body,
             preserve_classes: program.preserve_classes,
         }
@@ -2684,7 +2704,7 @@ fn emit(program: &Program, target: Language) -> String {
         .flat_map(|body| body.iter())
         .chain(top_level.iter().copied())
         .collect::<Vec<_>>();
-    match target {
+    let code = match target {
         Language::JavaScript => format!(
             "\"use strict\";\n\n{}",
             declarations
@@ -2786,6 +2806,14 @@ fn emit(program: &Program, target: Language) -> String {
                 main
             )
         }
+    };
+    let comments = crate::backend::emit_comments(&program.comments, target);
+    if comments.is_empty() {
+        code
+    } else if code.is_empty() {
+        comments
+    } else {
+        format!("{}\n\n{}", comments, code)
     }
 }
 
@@ -2875,6 +2903,74 @@ mod tests {
         Language::Go,
         Language::Rust,
     ];
+
+    fn comment_fixture(language: Language) -> &'static str {
+        match language {
+            Language::JavaScript => "// COMMENT_LEADING\nfunction main() {\n  /* COMMENT_BLOCK */\n  return; // COMMENT_TRAILING\n}",
+            Language::Java => "// COMMENT_LEADING\nfinal class Demo {\n  /* COMMENT_BLOCK */\n  static void main(String[] args) { return; } // COMMENT_TRAILING\n}",
+            Language::Dart => "// COMMENT_LEADING\nvoid main() {\n  /* COMMENT_BLOCK */\n  return; // COMMENT_TRAILING\n}",
+            Language::Swift => "// COMMENT_LEADING\nfunc main() {\n  /* COMMENT_BLOCK */\n  return // COMMENT_TRAILING\n}",
+            Language::Python => "# COMMENT_LEADING\ndef main():\n    # COMMENT_BLOCK\n    return  # COMMENT_TRAILING\n",
+            Language::Go => "package main\n// COMMENT_LEADING\nfunc main() {\n  /* COMMENT_BLOCK */\n  return // COMMENT_TRAILING\n}",
+            Language::Rust => "// COMMENT_LEADING\nfn main() {\n  /* COMMENT_BLOCK */\n  return; // COMMENT_TRAILING\n}",
+        }
+    }
+
+    #[test]
+    fn every_language_pair_preserves_all_ast_comments() {
+        for from in LANGUAGES {
+            let source = comment_fixture(from);
+            let unit = crate::frontend::parse_source(source, from);
+            assert_eq!(unit.comments.len(), 3, "{:?}: {:#?}", from, unit.comments);
+            for marker in ["COMMENT_LEADING", "COMMENT_BLOCK", "COMMENT_TRAILING"] {
+                assert!(
+                    unit.comments
+                        .iter()
+                        .any(|comment| comment.text.contains(marker)),
+                    "{:?} IR lost {}",
+                    from,
+                    marker
+                );
+            }
+
+            for to in LANGUAGES {
+                let output = translate(source, from, to);
+                for marker in ["COMMENT_LEADING", "COMMENT_BLOCK", "COMMENT_TRAILING"] {
+                    assert!(
+                        output.contains(marker),
+                        "{:?} -> {:?} lost {}:\n{}",
+                        from,
+                        to,
+                        marker,
+                        output
+                    );
+                }
+                if to == Language::Python {
+                    assert!(
+                        output
+                            .lines()
+                            .filter(|line| line.trim_start().starts_with('#'))
+                            .count()
+                            >= 3,
+                        "{:?} -> Python did not normalize comments:\n{}",
+                        from,
+                        output
+                    );
+                    assert!(!output.contains("/* COMMENT_BLOCK */"), "{}", output);
+                } else {
+                    assert!(
+                        !output
+                            .lines()
+                            .any(|line| line.trim_start().starts_with("# COMMENT_")),
+                        "{:?} -> {:?} retained Python-only comment syntax:\n{}",
+                        from,
+                        to,
+                        output
+                    );
+                }
+            }
+        }
+    }
 
     fn fixture(language: Language) -> &'static str {
         match language {

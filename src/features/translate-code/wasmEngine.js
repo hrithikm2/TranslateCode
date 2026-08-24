@@ -52,7 +52,11 @@ function createWasiImports(memoryRef) {
 
 async function loadEngine() {
   if (!modulePromise) {
-    modulePromise = fetch(`${import.meta.env.BASE_URL}engine.wasm`)
+    modulePromise = fetch(`${import.meta.env.BASE_URL}engine.wasm`, {
+      // The Wasm binary is emitted under a stable public URL. Revalidate it so
+      // a deployment cannot keep running an older parser/backend build.
+      cache: 'no-cache',
+    })
       .then(async (response) => {
         if (!response.ok) throw new Error(`Unable to load engine.wasm (${response.status})`);
         const bytes = await response.arrayBuffer();

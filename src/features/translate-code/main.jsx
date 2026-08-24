@@ -9,6 +9,8 @@ import { detectLanguage, LANGUAGE_META } from './languageDetection.js';
 import { transpile, warmEngine } from './wasmEngine.js';
 import './styles.css';
 
+const DONATION_URL = import.meta.env.VITE_DONATION_URL || 'https://github.com/sponsors/hrithikm2';
+
 const LANGUAGE_THEMES = {
   python: { logo: siPython, primary: '#3776AB', secondary: '#FFD43B', rgb: '55, 118, 171' },
   javascript: { logo: siJavascript, primary: '#F7DF1E', secondary: '#FFEA70', rgb: '247, 223, 30' },
@@ -379,7 +381,7 @@ function App() {
       )}
 
       <nav className="topbar">
-        <a className="brand" href="#top" aria-label="TranslateCode home">
+        <a className="brand" href="/" aria-label="Back to workspace chooser">
           <span className="brand-mark"><img src="/translatecode-mark.svg" alt="" /></span>
           <span>Translate<span className="brand-light">Code</span></span>
         </a>
@@ -393,7 +395,7 @@ function App() {
         </div>
         <div className="hero-aside">
           <p>Move between programming languages with a focused workspace designed for clear, consistent results.</p>
-          <div className="hero-metrics"><span><b>Source-aware</b> input</span><span><b>Target-ready</b> output</span></div>
+          <div className="hero-metrics"><span><b>Source-aware</b> input</span><span><b>Target-ready</b> output</span><span><b>Free</b> forever</span></div>
         </div>
       </section>
 
@@ -453,6 +455,39 @@ function App() {
         </div>
       </section>
 
+      <section className="use-cases-section" aria-labelledby="use-cases-title">
+        <header className="use-cases-heading">
+          <div>
+            <span>Before you translate</span>
+            <h2 id="use-cases-title">Where TranslateCode fits.</h2>
+          </div>
+          <p>Best results come from self-contained code whose behavior can be understood without the rest of a project.</p>
+        </header>
+        <div className="use-case-grid">
+          <article className="use-case-card use-case-ideal">
+            <span className="use-case-label"><i aria-hidden="true">✓</i> Ideal use cases</span>
+            <h3>Focused, language-level code</h3>
+            <ul>
+              <li>Small functions, utility classes, and reusable helpers</li>
+              <li>Algorithms and data-structure solutions</li>
+              <li>Standard collections, conditions, loops, slices, and recursion</li>
+              <li>Self-contained examples with no framework or project dependencies</li>
+            </ul>
+          </article>
+          <article className="use-case-card use-case-caution">
+            <span className="use-case-label"><i aria-hidden="true">!</i> Not ideal use cases</span>
+            <h3>Project- or runtime-dependent code</h3>
+            <ul>
+              <li>Entire applications, repositories, or multi-file features</li>
+              <li>Framework code such as Flutter, React, Spring, or SwiftUI</li>
+              <li>Build configuration, dependency injection, generated code, or platform APIs</li>
+              <li>Macros, reflection, FFI, or runtime-specific concurrency and memory behavior</li>
+            </ul>
+          </article>
+        </div>
+        <p className="use-cases-note"><strong>Always review the result.</strong> Format, compile, and test translated code in the target language's own toolchain.</p>
+      </section>
+
       <section className="examples-section" aria-labelledby="examples-title">
         <header className="examples-heading">
           <div><span>Python examples</span><h2 id="examples-title">Start with a familiar problem.</h2></div>
@@ -481,7 +516,10 @@ function App() {
         </div>
       </section>
 
-      <footer className="site-footer"><span>TranslateCode</span><span>Code translation, made clear.</span></footer>
+      <footer className="site-footer">
+        <span>TranslateCode · Free forever</span>
+        <a href={DONATION_URL} target="_blank" rel="noreferrer">Donate to support development <i aria-hidden="true">↗</i></a>
+      </footer>
 
       {pendingExample && (
         <div className="confirmation-layer" role="presentation" onMouseDown={(event) => {

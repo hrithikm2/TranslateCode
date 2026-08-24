@@ -1,11 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::backend::{Backend, BackendOutput};
+use crate::backend::{
+    emit_comments, is_python_main_guard, unsupported_diagnostics, Backend, BackendOutput,
+};
 use crate::typed_ir::{
     Argument, Body, BodyKind, ClassDeclaration, ClassKind, ClassMember, CollectionElement,
     CompilationUnit, ConstructorDeclaration, Declaration, Expression, ExpressionKind,
-    ExtensionDeclaration, FunctionDeclaration, Literal, Parameter, PatternKind, Statement,
-    StatementKind, SwitchExpressionCase, TypeReference,
+    ExtensionDeclaration, FunctionDeclaration, IntrinsicOperation, Literal, Parameter, PatternKind,
+    Statement, StatementKind, SwitchExpressionCase, TypeReference,
 };
 
 pub struct JavaBackend;
@@ -38,23 +40,40 @@ impl Backend for JavaBackend {
                 Declaration::Function(_) => continue,
             });
         }
-        let functions = unit
+        let mut functions = unit
             .declarations
             .iter()
             .filter_map(|declaration| match declaration {
                 Declaration::Function(value) => Some(emit_top_level_function(value, &context)),
                 _ => None,
             })
-            .collect::<Vec<_>>()
-            .join("\n\n");
+            .collect::<Vec<_>>();
+        if !unit.top_level_statements.is_empty() {
+            functions.push(format!(
+                "static {{\n{}\n}}",
+                indent(
+                    &unit
+                        .top_level_statements
+                        .iter()
+                        .filter(|value| !is_python_main_guard(value))
+                        .map(|value| emit_statement(value, false, &context))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    1
+                )
+            ));
+        }
         sections.push(format!(
             "public final class TranslatedProgram {{\n{}\n}}",
-            indent(&functions, 1)
+            indent(&functions.join("\n\n"), 1)
         ));
         let program = sections.join("\n\n");
         let needs_runtime = program.contains("DartRuntime.");
         let imports = emit_imports(&program, needs_runtime);
         let mut output = Vec::new();
+        if !unit.comments.is_empty() {
+            output.push(emit_comments(&unit.comments, crate::Language::Java));
+        }
         if !imports.is_empty() {
             output.push(imports);
         }
@@ -64,7 +83,7 @@ impl Backend for JavaBackend {
         output.push(program);
         BackendOutput {
             code: output.join("\n\n"),
-            diagnostics: Vec::new(),
+            diagnostics: unsupported_diagnostics(unit),
         }
     }
 }
@@ -325,6 +344,9 @@ fn emit_member(
         ClassMember::Operator(value) => Some(emit_method(value, class, is_interface, context)),
         ClassMember::Constructor(value) if !is_interface => {
             Some(emit_constructor(value, class, context))
+        }
+        ClassMember::Unlowered { syntax_kind, .. } => {
+            Some(format!("/* unsupported class member: {} */", syntax_kind))
         }
         _ => None,
     }
@@ -659,7 +681,7 @@ fn emit_body(body: &Body, async_return: bool, context: &JavaContext) -> String {
             .map(|value| emit_statement(value, async_return, context))
             .collect::<Vec<_>>()
             .join("\n"),
-        BodyKind::Unlowered => String::new(),
+        BodyKind::Unlowered => format!("/* unsupported body: {} */", body.syntax_kind),
     }
 }
 
@@ -690,7 +712,9 @@ fn emit_statement(statement: &Statement, async_return: bool, context: &JavaConte
             context,
         ),
         StatementKind::Expression(value) => {
-            if statement.source.trim_start().starts_with("throw ") {
+            if matches!(&value.kind, ExpressionKind::Raw { .. }) {
+                "/* unsupported expression statement */".into()
+            } else if statement.source.trim_start().starts_with("throw ") {
                 let raw = statement
                     .source
                     .trim()
@@ -727,6 +751,31 @@ fn emit_statement(statement: &Statement, async_return: bool, context: &JavaConte
             "for (var {} : {}) {}",
             variable,
             emit_expression(iterable, context),
+            emit_statement(body, async_return, context)
+        ),
+        StatementKind::For {
+            initializers,
+            condition,
+            updates,
+            body,
+        } => format!(
+            "for ({}; {}; {}) {}",
+            initializers
+                .iter()
+                .map(|value| emit_statement(value, async_return, context)
+                    .trim_end_matches(';')
+                    .to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
+            condition
+                .as_ref()
+                .map(|value| emit_expression(value, context))
+                .unwrap_or_default(),
+            updates
+                .iter()
+                .map(|value| emit_expression(value, context))
+                .collect::<Vec<_>>()
+                .join(", "),
             emit_statement(body, async_return, context)
         ),
         StatementKind::While { condition, body } => format!(
@@ -986,6 +1035,23 @@ fn emit_expression(expression: &Expression, context: &JavaContext) -> String {
                 emit_call(callee, arguments, context)
             }
         }
+        ExpressionKind::IntrinsicCall {
+            operation,
+            receiver,
+            arguments,
+        } => format!(
+            "{}.{}({})",
+            emit_expression(receiver, context),
+            match operation {
+                IntrinsicOperation::CollectionContains => "contains",
+                IntrinsicOperation::CollectionIndexOf => "indexOf",
+            },
+            arguments
+                .iter()
+                .map(|value| emit_expression(value, context))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ExpressionKind::ObjectCreation {
             type_ref,
             constructor,
@@ -1056,7 +1122,7 @@ fn emit_expression(expression: &Expression, context: &JavaContext) -> String {
         ExpressionKind::Switch { expression, cases } => {
             emit_switch_expression(expression, cases, context)
         }
-        ExpressionKind::Raw { .. } => emit_raw_expression(&expression.source, context),
+        ExpressionKind::Raw { .. } => "null /* unsupported expression */".into(),
     }
 }
 

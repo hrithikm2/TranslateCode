@@ -13,9 +13,9 @@ use crate::typed_ir::{
     Argument, Body, BodyKind, CatchClause, ClassDeclaration, ClassKind, ClassMember,
     CollectionElement, CompilationUnit, ConstructorDeclaration, Declaration, EnumDeclaration,
     Expression, ExpressionKind, ExtensionDeclaration, FieldDeclaration, FunctionDeclaration,
-    ImportDeclaration, Literal, Parameter, ParameterKind, Pattern, PatternField, PatternKind,
-    Statement, StatementKind, StringPart, SwitchCase, SwitchExpressionCase, TypeAliasDeclaration,
-    TypeParameter, TypeReference,
+    ImportDeclaration, IntrinsicOperation, Literal, Parameter, ParameterKind, Pattern,
+    PatternField, PatternKind, Statement, StatementKind, StringPart, SwitchCase,
+    SwitchExpressionCase, TypeAliasDeclaration, TypeParameter, TypeReference,
 };
 
 pub struct DartFrontend;
@@ -29,6 +29,7 @@ impl Frontend for DartFrontend {
         };
         let root = tree.root_node();
         let mut unit = CompilationUnit::default();
+        unit.comments = common::collect_comments(root, source);
         collect_syntax_errors(root, source, language, &mut unit.diagnostics);
         let mut cursor = root.walk();
         for node in root.named_children(&mut cursor) {
@@ -515,25 +516,7 @@ fn lower_statement(node: Node<'_>, source: &str) -> Statement {
                 },
             }
         }
-        "for_statement" => {
-            let variable = field_text(node, "name", source).unwrap_or_default();
-            let iterable = node
-                .child_by_field_name("value")
-                .map(|value| lower_expression(value, source));
-            let body = node
-                .child_by_field_name("body")
-                .map(|value| lower_statement(value, source));
-            match (iterable, body) {
-                (Some(iterable), Some(body)) => StatementKind::ForEach {
-                    variable,
-                    iterable,
-                    body: Box::new(body),
-                },
-                _ => StatementKind::Unlowered {
-                    syntax_kind: node.kind().into(),
-                },
-            }
-        }
+        "for_statement" => lower_for_statement(node, source),
         "while_statement" => lower_loop(node, source, false),
         "do_statement" => lower_loop(node, source, true),
         "switch_statement" => lower_switch_statement(node, source),
@@ -560,6 +543,59 @@ fn lower_statement(node: Node<'_>, source: &str) -> Statement {
         kind,
         source: source_text,
         span: span(node),
+    }
+}
+
+fn lower_for_statement(node: Node<'_>, source: &str) -> StatementKind {
+    let body = node
+        .child_by_field_name("body")
+        .map(|value| Box::new(lower_statement(value, source)));
+    if let (Some(iterable), Some(body)) =
+        (node.child_by_field_name("value"), body.as_ref().cloned())
+    {
+        return StatementKind::ForEach {
+            variable: field_text(node, "name", source).unwrap_or_default(),
+            iterable: lower_expression(iterable, source),
+            body,
+        };
+    }
+    let Some(body) = body else {
+        return StatementKind::Unlowered {
+            syntax_kind: node.kind().into(),
+        };
+    };
+    let mut init_cursor = node.walk();
+    let initializers = node
+        .children_by_field_name("init", &mut init_cursor)
+        .map(|value| {
+            if value.kind() == "local_variable_declaration" {
+                Statement {
+                    kind: lower_local_variable(value, source),
+                    source: node_text(value, source).into(),
+                    span: span(value),
+                }
+            } else {
+                Statement {
+                    kind: StatementKind::Expression(lower_expression(value, source)),
+                    source: node_text(value, source).into(),
+                    span: span(value),
+                }
+            }
+        })
+        .collect();
+    let condition = node
+        .child_by_field_name("condition")
+        .map(|value| lower_expression(unwrap_parenthesized(value), source));
+    let mut update_cursor = node.walk();
+    let updates = node
+        .children_by_field_name("update", &mut update_cursor)
+        .map(|value| lower_expression(value, source))
+        .collect();
+    StatementKind::For {
+        initializers,
+        condition,
+        updates,
+        body,
     }
 }
 
@@ -861,15 +897,33 @@ fn lower_expression(node: Node<'_>, source: &str) -> Expression {
             }
         }
         "unary_expression" | "postfix_expression" => {
-            let operand = first_named_child(node);
+            let operand = direct_named_children(node)
+                .into_iter()
+                .find(|value| !value.kind().contains("operator"));
             match operand {
-                Some(operand) => ExpressionKind::Unary {
-                    operator: source_text
+                Some(operand) => {
+                    let operator = source_text
                         .replace(node_text(operand, source), "")
                         .trim()
-                        .to_string(),
-                    operand: Box::new(lower_expression(operand, source)),
-                },
+                        .to_string();
+                    let operand = lower_expression(operand, source);
+                    if matches!(operator.as_str(), "++" | "--") {
+                        ExpressionKind::Assignment {
+                            target: Box::new(operand),
+                            operator: if operator == "++" { "+=" } else { "-=" }.into(),
+                            value: Box::new(Expression {
+                                kind: ExpressionKind::Literal(Literal::Integer("1".into())),
+                                source: "1".into(),
+                                span: span(node),
+                            }),
+                        }
+                    } else {
+                        ExpressionKind::Unary {
+                            operator,
+                            operand: Box::new(operand),
+                        }
+                    }
+                }
                 None => ExpressionKind::Raw {
                     syntax_kind: node.kind().into(),
                 },
@@ -948,6 +1002,23 @@ fn lower_call_expression(node: Node<'_>, source: &str) -> ExpressionKind {
             let arguments = arguments_node
                 .map(|value| lower_arguments(value, source))
                 .unwrap_or_default();
+            if let ExpressionKind::Member {
+                object, property, ..
+            } = &lowered_callee.kind
+            {
+                let operation = match property.as_str() {
+                    "contains" | "containsKey" => Some(IntrinsicOperation::CollectionContains),
+                    "indexOf" => Some(IntrinsicOperation::CollectionIndexOf),
+                    _ => None,
+                };
+                if let Some(operation) = operation {
+                    return ExpressionKind::IntrinsicCall {
+                        operation,
+                        receiver: object.clone(),
+                        arguments: arguments.iter().map(|value| value.value.clone()).collect(),
+                    };
+                }
+            }
             if let ExpressionKind::Member {
                 object, property, ..
             } = &mut lowered_callee.kind

@@ -27,6 +27,9 @@ npm install
 npm run dev
 ```
 
+To point the footer donation link at another provider, copy `.env.example` to
+`.env` and set `VITE_DONATION_URL` to the public donation page.
+
 The production build recompiles the Rust engine and packages `engine.wasm` with the site:
 
 ```bash
