@@ -7,7 +7,7 @@
     "dev": "vite",
     "engine:build": "sh scripts/build-engine.sh",
     "build": "npm run engine:build && vite build",
-    "build:site": "npm run engine:build && vite build",
+    "build:site": "vite build",
     "preview": "vite preview"
   },
   "dependencies": {
