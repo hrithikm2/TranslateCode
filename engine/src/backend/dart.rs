@@ -17,6 +17,7 @@ impl Backend for DartBackend {
             .imports
             .iter()
             .filter(|value| !matches!(value.uri.as_str(), "__future__" | "typing"))
+            .filter(|value| !crate::collection_ir::is_standard_collection_import(&value.uri))
             .map(emit_import)
             .collect::<Vec<_>>();
         let mut declarations = unit
@@ -72,10 +73,24 @@ impl Backend for DartBackend {
                 )
             ));
         }
+        let needs_collection_import = declarations.iter().any(|value| value.contains("Queue"));
+        let needs_contains_runtime = declarations
+            .iter()
+            .any(|value| value.contains("_tcContains("));
         let code = [
             (!unit.comments.is_empty())
                 .then(|| emit_comments(&unit.comments, crate::Language::Dart)),
-            (!imports.is_empty()).then(|| imports.join("\n")),
+            (needs_collection_import || !imports.is_empty()).then(|| {
+                let mut values = imports.clone();
+                if needs_collection_import {
+                    values.insert(0, "import 'dart:collection';".into());
+                }
+                values.join("\n")
+            }),
+            needs_contains_runtime.then(|| {
+                "bool _tcContains(Object? collection, Object? value) {\n  if (collection is Map) return collection.containsKey(value);\n  if (collection is Iterable) return collection.contains(value);\n  return false;\n}"
+                    .into()
+            }),
             (!declarations.is_empty()).then(|| declarations.join("\n\n")),
         ]
         .into_iter()
@@ -291,6 +306,7 @@ fn emit_type(reference: &TypeReference) -> String {
         "list" | "List" => "List",
         "dict" | "Map" => "Map",
         "set" | "Set" => "Set",
+        "deque" | "Queue" => "Queue",
         other => other,
     };
     let mut value = if reference.arguments.is_empty() {
@@ -591,19 +607,39 @@ fn emit_expression(expression: &Expression) -> String {
             operation,
             receiver,
             arguments,
-        } => format!(
-            "{}.{}({})",
-            emit_expression(receiver),
-            match operation {
-                IntrinsicOperation::CollectionContains => "contains",
-                IntrinsicOperation::CollectionIndexOf => "indexOf",
-            },
-            arguments
+        } => {
+            let receiver = emit_expression(receiver);
+            let arguments = arguments
                 .iter()
                 .map(emit_expression)
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .join(", ");
+            if *operation == IntrinsicOperation::CollectionContains {
+                format!("_tcContains({}, {})", receiver, arguments)
+            } else {
+                format!(
+                    "{}.{}({})",
+                    receiver,
+                    match operation {
+                        IntrinsicOperation::CollectionContains => unreachable!(),
+                        IntrinsicOperation::CollectionIndexOf => "indexOf",
+                        IntrinsicOperation::CollectionSlice => "sublist",
+                        IntrinsicOperation::CollectionClear => "clear",
+                        IntrinsicOperation::CollectionAdd => "add",
+                        IntrinsicOperation::CollectionAddAll => "addAll",
+                        IntrinsicOperation::CollectionRemove => "remove",
+                        IntrinsicOperation::CollectionRemoveAt => "removeAt",
+                        IntrinsicOperation::QueueAddFirst => "addFirst",
+                        IntrinsicOperation::QueueAddLast => "addLast",
+                        IntrinsicOperation::QueueRemoveFirst => "removeFirst",
+                        IntrinsicOperation::QueueRemoveLast => "removeLast",
+                        IntrinsicOperation::MapContainsKey => "containsKey",
+                        IntrinsicOperation::MapContainsValue => "containsValue",
+                    },
+                    arguments
+                )
+            }
+        }
         ExpressionKind::ObjectCreation {
             type_ref,
             constructor,

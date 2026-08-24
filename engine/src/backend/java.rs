@@ -96,8 +96,12 @@ fn emit_imports(program: &str, needs_runtime: bool) -> String {
         ("Arrays", "java.util.Arrays"),
         ("HashMap", "java.util.HashMap"),
         ("HashSet", "java.util.HashSet"),
+        ("ArrayDeque", "java.util.ArrayDeque"),
+        ("Deque", "java.util.Deque"),
+        ("Collection", "java.util.Collection"),
         ("List", "java.util.List"),
         ("Map", "java.util.Map"),
+        ("Set", "java.util.Set"),
         ("Objects", "java.util.Objects"),
         (
             "CompletableFuture",
@@ -107,7 +111,7 @@ fn emit_imports(program: &str, needs_runtime: bool) -> String {
     ];
     for (symbol, path) in symbols {
         if contains_java_symbol(program, symbol)
-            || (needs_runtime && matches!(symbol, "ArrayList" | "List"))
+            || (needs_runtime && matches!(symbol, "ArrayList" | "Collection" | "List" | "Map"))
         {
             imports.push(format!("import {};", path));
         }
@@ -226,6 +230,32 @@ fn emit_runtime() -> String {
             } else result.add((T) value);
         }
         return result;
+    }
+    static boolean contains(Object collection, Object value) {
+        if (collection instanceof Map<?, ?> map) return map.containsKey(value);
+        if (collection instanceof Collection<?> values) return values.contains(value);
+        if (collection instanceof String text) return text.contains(String.valueOf(value));
+        return false;
+    }
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static void addAll(Object collection, Object values) {
+        if (collection instanceof Map map && values instanceof Map additions) {
+            map.putAll(additions);
+        } else if (collection instanceof Collection target && values instanceof Collection additions) {
+            target.addAll(additions);
+        }
+    }
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static Object setIndex(Object collection, Object index, Object value) {
+        if (collection instanceof Map map) {
+            map.put(index, value);
+            return value;
+        }
+        if (collection instanceof List list && index instanceof Number number) {
+            list.set(number.intValue(), value);
+            return value;
+        }
+        throw new IllegalArgumentException("Indexed assignment requires a Map or List");
     }
 }"#
     .to_string()
@@ -996,6 +1026,16 @@ fn emit_expression(expression: &Expression, context: &JavaContext) -> String {
             operator,
             value,
         } => {
+            if let ExpressionKind::Index { object, index, .. } = &target.kind {
+                if operator == "=" {
+                    return format!(
+                        "DartRuntime.setIndex({}, {}, {})",
+                        emit_expression(object, context),
+                        emit_expression(index, context),
+                        emit_expression(value, context)
+                    );
+                }
+            }
             if let ExpressionKind::Member {
                 object, property, ..
             } = &target.kind
@@ -1039,19 +1079,41 @@ fn emit_expression(expression: &Expression, context: &JavaContext) -> String {
             operation,
             receiver,
             arguments,
-        } => format!(
-            "{}.{}({})",
-            emit_expression(receiver, context),
-            match operation {
-                IntrinsicOperation::CollectionContains => "contains",
-                IntrinsicOperation::CollectionIndexOf => "indexOf",
-            },
-            arguments
+        } => {
+            let receiver = emit_expression(receiver, context);
+            let arguments = arguments
                 .iter()
                 .map(|value| emit_expression(value, context))
                 .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .join(", ");
+            if *operation == IntrinsicOperation::CollectionContains {
+                format!("DartRuntime.contains({}, {})", receiver, arguments)
+            } else if *operation == IntrinsicOperation::CollectionAddAll {
+                format!("DartRuntime.addAll({}, {})", receiver, arguments)
+            } else {
+                format!(
+                    "{}.{}({})",
+                    receiver,
+                    match operation {
+                        IntrinsicOperation::CollectionContains => unreachable!(),
+                        IntrinsicOperation::CollectionIndexOf => "indexOf",
+                        IntrinsicOperation::CollectionSlice => "subList",
+                        IntrinsicOperation::CollectionClear => "clear",
+                        IntrinsicOperation::CollectionAdd => "add",
+                        IntrinsicOperation::CollectionAddAll => unreachable!(),
+                        IntrinsicOperation::CollectionRemove => "remove",
+                        IntrinsicOperation::CollectionRemoveAt => "remove",
+                        IntrinsicOperation::QueueAddFirst => "addFirst",
+                        IntrinsicOperation::QueueAddLast => "addLast",
+                        IntrinsicOperation::QueueRemoveFirst => "removeFirst",
+                        IntrinsicOperation::QueueRemoveLast => "removeLast",
+                        IntrinsicOperation::MapContainsKey => "containsKey",
+                        IntrinsicOperation::MapContainsValue => "containsValue",
+                    },
+                    arguments
+                )
+            }
+        }
         ExpressionKind::ObjectCreation {
             type_ref,
             constructor,
@@ -1243,6 +1305,19 @@ fn emit_call(callee: &Expression, arguments: &[Argument], context: &JavaContext)
 }
 
 fn emit_construct(name: &str, arguments: &[Argument], context: &JavaContext) -> String {
+    if let Some(implementation) = match name {
+        "List" => Some("ArrayList"),
+        "Map" => Some("HashMap"),
+        "Set" => Some("HashSet"),
+        "Queue" => Some("ArrayDeque"),
+        _ => None,
+    } {
+        return format!(
+            "new {}<>({})",
+            implementation,
+            emit_arguments(arguments, context)
+        );
+    }
     if let Some((class, constructor)) = name.split_once('.') {
         if context.classes.contains(class) {
             return format!(
@@ -1842,6 +1917,7 @@ fn emit_type(reference: &TypeReference, boxed: bool) -> String {
         "dynamic" | "Object" | "Object?" => "Object",
         "Future" => "CompletableFuture",
         "DateTime" => "LocalDateTime",
+        "Queue" => "Deque",
         other => other,
     };
     if reference.arguments.is_empty() {

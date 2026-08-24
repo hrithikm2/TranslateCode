@@ -13,9 +13,9 @@ use crate::typed_ir::{
     Argument, Body, BodyKind, CatchClause, ClassDeclaration, ClassKind, ClassMember,
     CollectionElement, CompilationUnit, ConstructorDeclaration, Declaration, EnumDeclaration,
     Expression, ExpressionKind, ExtensionDeclaration, FieldDeclaration, FunctionDeclaration,
-    ImportDeclaration, IntrinsicOperation, Literal, Parameter, ParameterKind, Pattern,
-    PatternField, PatternKind, Statement, StatementKind, StringPart, SwitchCase,
-    SwitchExpressionCase, TypeAliasDeclaration, TypeParameter, TypeReference,
+    ImportDeclaration, Literal, Parameter, ParameterKind, Pattern, PatternField, PatternKind,
+    Statement, StatementKind, StringPart, SwitchCase, SwitchExpressionCase, TypeAliasDeclaration,
+    TypeParameter, TypeReference,
 };
 
 pub struct DartFrontend;
@@ -1008,15 +1008,26 @@ fn lower_call_expression(node: Node<'_>, source: &str) -> ExpressionKind {
             let arguments = arguments_node
                 .map(|value| lower_arguments(value, source))
                 .unwrap_or_default();
+            if let ExpressionKind::Identifier(name) = &lowered_callee.kind {
+                if let Some(collection) = crate::collection_ir::canonical_collection_type(name) {
+                    return ExpressionKind::ObjectCreation {
+                        type_ref: TypeReference {
+                            name: collection.into(),
+                            arguments: type_arguments,
+                            nullable: false,
+                        },
+                        constructor: None,
+                        arguments,
+                        is_const: false,
+                    };
+                }
+            }
             if let ExpressionKind::Member {
                 object, property, ..
             } = &lowered_callee.kind
             {
-                let operation = match property.as_str() {
-                    "contains" | "containsKey" => Some(IntrinsicOperation::CollectionContains),
-                    "indexOf" => Some(IntrinsicOperation::CollectionIndexOf),
-                    _ => None,
-                };
+                let operation =
+                    crate::collection_ir::intrinsic_for_method(property, arguments.len());
                 if let Some(operation) = operation {
                     return ExpressionKind::IntrinsicCall {
                         operation,
@@ -1042,9 +1053,6 @@ fn lower_call_expression(node: Node<'_>, source: &str) -> ExpressionKind {
                         arguments,
                         is_const: false,
                     };
-                }
-                if property == "sublist" {
-                    *property = "slice".into();
                 }
             }
             ExpressionKind::Call {

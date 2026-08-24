@@ -2,6 +2,7 @@ use std::mem;
 use std::sync::Mutex;
 
 pub mod backend;
+pub mod collection_ir;
 pub mod diagnostic;
 pub mod frontend;
 pub mod semantic;
@@ -1355,15 +1356,19 @@ fn type_for(target: Language, canonical: &str) -> String {
             (Language::Python, "list") => format!("list[{}]", values.join(", ")),
             (Language::Python, "set") => format!("set[{}]", values.join(", ")),
             (Language::Python, "map") => format!("dict[{}]", values.join(", ")),
+            (Language::Python, "queue") => format!("deque[{}]", values.join(", ")),
             (Language::Java, "list") => format!("List<{}>", values.join(", ")),
             (Language::Java, "set") => format!("Set<{}>", values.join(", ")),
             (Language::Java, "map") => format!("Map<{}>", values.join(", ")),
+            (Language::Java, "queue") => format!("Deque<{}>", values.join(", ")),
             (Language::Dart, "list") => format!("List<{}>", values.join(", ")),
             (Language::Dart, "set") => format!("Set<{}>", values.join(", ")),
             (Language::Dart, "map") => format!("Map<{}>", values.join(", ")),
+            (Language::Dart, "queue") => format!("Queue<{}>", values.join(", ")),
             (Language::Swift, "list") => format!("[{}]", values.join(", ")),
             (Language::Swift, "set") => format!("Set<{}>", values.join(", ")),
             (Language::Swift, "map") => format!("[{}]", values.join(": ")),
+            (Language::Swift, "queue") => format!("[{}]", values.join(", ")),
             (Language::Go, "list") => format!("[]{}", values.join("")),
             (Language::Go, "set") => format!("map[{}]struct{{}}", values.join("")),
             (Language::Go, "map") => format!(
@@ -1371,9 +1376,11 @@ fn type_for(target: Language, canonical: &str) -> String {
                 values.first().cloned().unwrap_or_else(|| "any".into()),
                 values.get(1).cloned().unwrap_or_else(|| "any".into())
             ),
+            (Language::Go, "queue") => format!("[]{}", values.join("")),
             (Language::Rust, "list") => format!("Vec<{}>", values.join(", ")),
             (Language::Rust, "set") => format!("HashSet<{}>", values.join(", ")),
             (Language::Rust, "map") => format!("HashMap<{}>", values.join(", ")),
+            (Language::Rust, "queue") => format!("VecDeque<{}>", values.join(", ")),
             _ => "object".into(),
         };
     }
@@ -3153,6 +3160,90 @@ mod tests {
                 );
             }
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn dart_standard_collection_library_executes_after_translation() {
+        let source = r#"import 'dart:collection';
+
+void main() {
+  final HashMap<int, int> scores = HashMap<int, int>();
+  scores[2] = 7;
+  final HashSet<int> tags = HashSet<int>();
+  tags.add(3);
+  tags.addAll([4, 5]);
+  final Queue<int> pending = Queue<int>();
+  pending.addLast(5);
+  pending.addFirst(4);
+  print(scores.containsKey(2));
+  print(scores.containsValue(7));
+  print(tags.contains(4));
+  print(pending.removeFirst());
+}"#;
+        let root = std::env::temp_dir().join(format!(
+            "translatecode-dart-standard-collections-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
+        fs::create_dir_all(&root).unwrap();
+        for target in [Language::Python, Language::Java] {
+            let pair = root.join(format!("{target:?}").to_lowercase());
+            fs::create_dir_all(&pair).unwrap();
+            let generated = translate(source, Language::Dart, target);
+            let result = compile_and_run(&pair, target, &generated);
+            assert!(
+                result.status.success(),
+                "Dart standard collections -> {target:?} failed:\n{}\nGenerated:\n{generated}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(
+                String::from_utf8_lossy(&result.stdout),
+                "true\ntrue\ntrue\n4\n".replace(
+                    "true",
+                    if target == Language::Python {
+                        "True"
+                    } else {
+                        "true"
+                    }
+                ),
+                "Dart standard collections changed behavior for {target:?}:\n{generated}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn python_standard_collection_library_executes_after_translation() {
+        let source = r#"from collections import deque
+
+def main() -> None:
+    pending: deque[int] = deque()
+    pending.append(5)
+    pending.appendleft(4)
+    print(pending.popleft())
+
+if __name__ == "__main__":
+    main()
+"#;
+        let root = std::env::temp_dir().join(format!(
+            "translatecode-python-standard-collections-{}",
+            std::process::id()
+        ));
+        if root.exists() {
+            fs::remove_dir_all(&root).unwrap();
+        }
+        fs::create_dir_all(&root).unwrap();
+        let generated = translate(source, Language::Python, Language::Dart);
+        let result = compile_and_run(&root, Language::Dart, &generated);
+        assert!(
+            result.status.success(),
+            "Python standard collections -> Dart failed:\n{}\nGenerated:\n{generated}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(String::from_utf8_lossy(&result.stdout), "4\n");
         fs::remove_dir_all(root).unwrap();
     }
 

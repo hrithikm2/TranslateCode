@@ -21,9 +21,15 @@ impl Backend for PythonBackend {
         }
         sections.extend([
             "from __future__ import annotations".into(),
+            "from collections import deque".into(),
             "from typing import Any, Final".into(),
         ]);
-        sections.extend(unit.imports.iter().map(emit_import));
+        sections.extend(
+            unit.imports
+                .iter()
+                .filter(|value| !crate::collection_ir::is_standard_collection_import(&value.uri))
+                .map(emit_import),
+        );
 
         let mut entrypoint = None;
         for declaration in &unit.declarations {
@@ -76,6 +82,11 @@ impl Backend for PythonBackend {
             .any(|value| matches!(value, Declaration::Function(value) if value.name == "main"))
         {
             sections.push("if __name__ == \"__main__\":\n    main()".into());
+        }
+        let rendered = sections.join("\n\n");
+        if rendered.contains("_tc_") {
+            let insert_at = if unit.comments.is_empty() { 3 } else { 4 };
+            sections.insert(insert_at, emit_collection_runtime().into());
         }
         BackendOutput {
             code: sections.join("\n\n"),
@@ -255,6 +266,7 @@ fn emit_type(reference: &TypeReference) -> String {
         "List" | "Iterable" => "list",
         "Set" => "set",
         "Map" => "dict",
+        "Queue" => "deque",
         other => other,
     };
     let rendered = if reference.arguments.is_empty() {
@@ -518,7 +530,45 @@ fn emit_expression(expression: &Expression) -> String {
                 .unwrap_or_else(|| "None".into());
             match operation {
                 IntrinsicOperation::CollectionContains => format!("{} in {}", first, receiver),
-                IntrinsicOperation::CollectionIndexOf => format!("{}.index({})", receiver, first),
+                IntrinsicOperation::CollectionIndexOf => {
+                    let start = arguments
+                        .get(1)
+                        .map(emit_expression)
+                        .unwrap_or_else(|| "0".into());
+                    format!(
+                        "({0}.index({1}, {2}) if {1} in {0}[{2}:] else -1)",
+                        receiver, first, start
+                    )
+                }
+                IntrinsicOperation::CollectionSlice => {
+                    let end = arguments.get(1).map(emit_expression).unwrap_or_default();
+                    format!("{}[{}:{}]", receiver, first, end)
+                }
+                IntrinsicOperation::CollectionClear => format!("{}.clear()", receiver),
+                IntrinsicOperation::CollectionAdd => {
+                    format!("_tc_add({}, {})", receiver, first)
+                }
+                IntrinsicOperation::CollectionAddAll => {
+                    format!("_tc_add_all({}, {})", receiver, first)
+                }
+                IntrinsicOperation::CollectionRemove => {
+                    format!("_tc_remove({}, {})", receiver, first)
+                }
+                IntrinsicOperation::CollectionRemoveAt => {
+                    format!("{}.pop({})", receiver, first)
+                }
+                IntrinsicOperation::QueueAddFirst => {
+                    format!("{}.appendleft({})", receiver, first)
+                }
+                IntrinsicOperation::QueueAddLast => {
+                    format!("{}.append({})", receiver, first)
+                }
+                IntrinsicOperation::QueueRemoveFirst => format!("{}.popleft()", receiver),
+                IntrinsicOperation::QueueRemoveLast => format!("{}.pop()", receiver),
+                IntrinsicOperation::MapContainsKey => format!("{} in {}", first, receiver),
+                IntrinsicOperation::MapContainsValue => {
+                    format!("{} in {}.values()", first, receiver)
+                }
             }
         }
         ExpressionKind::ObjectCreation {
@@ -583,6 +633,30 @@ fn emit_expression(expression: &Expression) -> String {
     }
 }
 
+fn emit_collection_runtime() -> &'static str {
+    r#"def _tc_add(collection, value):
+    if isinstance(collection, set):
+        missing = value not in collection
+        collection.add(value)
+        return missing
+    collection.append(value)
+    return None
+
+def _tc_add_all(collection, values):
+    if isinstance(collection, (dict, set)):
+        collection.update(values)
+    else:
+        collection.extend(values)
+
+def _tc_remove(collection, value):
+    if isinstance(collection, dict):
+        return collection.pop(value, None)
+    if value not in collection:
+        return False
+    collection.remove(value)
+    return True"#
+}
+
 fn emit_arguments(arguments: &[Argument]) -> String {
     arguments
         .iter()
@@ -603,6 +677,7 @@ fn emit_type_name(reference: &TypeReference) -> String {
         "List" => "list".into(),
         "Map" => "dict".into(),
         "Set" => "set".into(),
+        "Queue" => "deque".into(),
         other => other.into(),
     }
 }
@@ -729,7 +804,9 @@ Future<void> initialize() async {
             output.code
         );
         assert!(
-            output.code.contains("return [i, nums.index(offset)]"),
+            output
+                .code
+                .contains("return [i, (nums.index(offset, 0) if offset in nums[0:] else -1)]"),
             "{}",
             output.code
         );
@@ -741,8 +818,10 @@ Future<void> initialize() async {
 
     #[test]
     fn emits_dart_map_contains_key_as_python_membership() {
-        let source = r#"List<int> twoSum(List<int> nums, int target) {
-  final visitedNumbers = <int, int>{};
+        let source = r#"import 'dart:collection';
+
+List<int> twoSum(List<int> nums, int target) {
+  final HashMap<int, int> visitedNumbers = HashMap<int, int>();
   for (int i = 0; i < nums.length; i++) {
     final complement = target - nums[i];
     if (visitedNumbers.containsKey(complement)) {
@@ -760,11 +839,24 @@ Future<void> initialize() async {
             output.code
         );
         assert!(
+            output
+                .code
+                .contains("visitedNumbers: Final[dict[int, int]] = dict()"),
+            "{}",
+            output.code
+        );
+        assert!(!output.code.contains("dart.collection"), "{}", output.code);
+        assert!(!output.code.contains("HashMap"), "{}", output.code);
+        assert!(
             output.code.contains("visitedNumbers[nums[i]] = i"),
             "{}",
             output.code
         );
-        assert!(!output.code.contains("visitedNumbers = i"), "{}", output.code);
+        assert!(
+            !output.code.contains("visitedNumbers = i"),
+            "{}",
+            output.code
+        );
         assert!(!output.code.contains(".containsKey("), "{}", output.code);
     }
 }

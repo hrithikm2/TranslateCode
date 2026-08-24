@@ -394,6 +394,18 @@ pub enum ExpressionKind {
 pub enum IntrinsicOperation {
     CollectionContains,
     CollectionIndexOf,
+    CollectionSlice,
+    CollectionClear,
+    CollectionAdd,
+    CollectionAddAll,
+    CollectionRemove,
+    CollectionRemoveAt,
+    QueueAddFirst,
+    QueueAddLast,
+    QueueRemoveFirst,
+    QueueRemoveLast,
+    MapContainsKey,
+    MapContainsValue,
 }
 
 #[derive(Clone, Debug)]

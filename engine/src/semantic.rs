@@ -16,6 +16,7 @@ pub enum SemanticType {
     List(Box<SemanticType>),
     Set(Box<SemanticType>),
     Map(Box<SemanticType>, Box<SemanticType>),
+    Queue(Box<SemanticType>),
 }
 
 impl SemanticType {
@@ -55,27 +56,31 @@ impl SemanticType {
                 .into_iter()
                 .map(Self::parse)
                 .collect::<Option<Vec<_>>>()?;
-            return match container {
-                "List" | "Array" | "Vec" | "Iterable" | "list" | "tuple" => arguments
+            return match crate::collection_ir::canonical_collection_type(container) {
+                Some(crate::collection_ir::LIST) => arguments
                     .into_iter()
                     .next()
                     .map(|item| Self::List(Box::new(item))),
-                "Set" | "HashSet" | "set" => arguments
+                Some(crate::collection_ir::SET) => arguments
                     .into_iter()
                     .next()
                     .map(|item| Self::Set(Box::new(item))),
-                "Map" | "HashMap" | "dict" if arguments.len() == 2 => Some(Self::Map(
+                Some(crate::collection_ir::MAP) if arguments.len() == 2 => Some(Self::Map(
                     Box::new(arguments[0].clone()),
                     Box::new(arguments[1].clone()),
                 )),
+                Some(crate::collection_ir::QUEUE) => arguments
+                    .into_iter()
+                    .next()
+                    .map(|item| Self::Queue(Box::new(item))),
                 _ => None,
             };
         }
 
         Some(match value {
             "str" | "String" | "string" => Self::String,
-            "int" | "Int" | "i8" | "i16" | "i32" | "i64" | "isize" | "u8" | "u16" | "u32"
-            | "u64" | "usize" => Self::Integer,
+            "int" | "Int" | "Integer" | "Long" | "long" | "i8" | "i16" | "i32" | "i64"
+            | "isize" | "u8" | "u16" | "u32" | "u64" | "usize" => Self::Integer,
             "float" | "double" | "Float" | "Double" | "f32" | "f64" | "num" => Self::Float,
             "bool" | "boolean" | "Boolean" | "Bool" => Self::Boolean,
             "void" | "Void" | "()" | "None" => Self::Void,
@@ -127,6 +132,7 @@ impl SemanticType {
             Self::List(value) => format!("list<{}>", value.canonical()),
             Self::Set(value) => format!("set<{}>", value.canonical()),
             Self::Map(key, value) => format!("map<{},{}>", key.canonical(), value.canonical()),
+            Self::Queue(value) => format!("queue<{}>", value.canonical()),
         }
     }
 }
@@ -184,5 +190,23 @@ mod tests {
                 .canonical(),
             "map<string,list<int>>"
         );
+        for annotation in [
+            "LinkedHashMap<int, String>",
+            "TreeMap<Integer, String>",
+            "BTreeMap<i64, String>",
+        ] {
+            assert_eq!(
+                SemanticType::parse(annotation).unwrap().canonical(),
+                "map<int,string>",
+                "failed to normalize {annotation}"
+            );
+        }
+        for annotation in ["ListQueue<int>", "ArrayDeque<Integer>", "VecDeque<i64>"] {
+            assert_eq!(
+                SemanticType::parse(annotation).unwrap().canonical(),
+                "queue<int>",
+                "failed to normalize {annotation}"
+            );
+        }
     }
 }

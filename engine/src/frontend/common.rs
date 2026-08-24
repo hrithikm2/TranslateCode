@@ -762,11 +762,34 @@ fn lower_binary(node: Node<'_>, source: &str, language: AstLanguage) -> Expressi
         .or_else(|| node.child_by_field_name("rhs"))
         .or_else(|| last_named_child(node));
     match (left, right) {
-        (Some(left), Some(right)) if left.id() != right.id() => ExpressionKind::Binary {
-            operator: operator_between(left, right, source),
-            left: Box::new(lower_expression(left, source, language)),
-            right: Box::new(lower_expression(right, source, language)),
-        },
+        (Some(left), Some(right)) if left.id() != right.id() => {
+            let operator = operator_between(left, right, source);
+            if matches!(operator.as_str(), "in" | "not in") {
+                let call = Expression {
+                    kind: ExpressionKind::IntrinsicCall {
+                        operation: crate::typed_ir::IntrinsicOperation::CollectionContains,
+                        receiver: Box::new(lower_expression(right, source, language)),
+                        arguments: vec![lower_expression(left, source, language)],
+                    },
+                    source: text(node, source).into(),
+                    span: span(node),
+                };
+                if operator == "not in" {
+                    ExpressionKind::Unary {
+                        operator: "!".into(),
+                        operand: Box::new(call),
+                    }
+                } else {
+                    call.kind
+                }
+            } else {
+                ExpressionKind::Binary {
+                    operator,
+                    left: Box::new(lower_expression(left, source, language)),
+                    right: Box::new(lower_expression(right, source, language)),
+                }
+            }
+        }
         _ => ExpressionKind::Raw {
             syntax_kind: node.kind().into(),
         },
@@ -1035,6 +1058,16 @@ fn lower_call(node: Node<'_>, source: &str, language: AstLanguage) -> Expression
         ExpressionKind::Member { property, .. } => Some(property.as_str()),
         _ => None,
     };
+    let collection_type = match &callee.kind {
+        ExpressionKind::Identifier(value) => crate::collection_ir::canonical_collection_type(value),
+        ExpressionKind::Member { object, .. } => match &object.kind {
+            ExpressionKind::Identifier(value) => {
+                crate::collection_ir::canonical_collection_type(value)
+            }
+            _ => None,
+        },
+        _ => None,
+    };
     if callee_name == Some("make")
         && text(node, source).contains("map[")
         && text(node, source).contains("struct{}")
@@ -1050,7 +1083,7 @@ fn lower_call(node: Node<'_>, source: &str, language: AstLanguage) -> Expression
             is_const: false,
         };
     }
-    if matches!(callee_name, Some("Map" | "HashMap" | "Dictionary"))
+    if collection_type == Some(crate::collection_ir::MAP)
         || (callee_name == Some("make") && text(node, source).contains("map["))
         || text(node, source).contains("HashMap::new")
     {
@@ -1060,7 +1093,9 @@ fn lower_call(node: Node<'_>, source: &str, language: AstLanguage) -> Expression
             entries: Vec::new(),
         };
     }
-    if matches!(callee_name, Some("Set" | "HashSet")) || text(node, source).contains("HashSet::") {
+    if collection_type == Some(crate::collection_ir::SET)
+        || text(node, source).contains("HashSet::")
+    {
         return ExpressionKind::ObjectCreation {
             type_ref: TypeReference {
                 name: "Set".into(),
@@ -1072,10 +1107,22 @@ fn lower_call(node: Node<'_>, source: &str, language: AstLanguage) -> Expression
             is_const: false,
         };
     }
-    if matches!(callee_name, Some("Array" | "List")) {
+    if collection_type == Some(crate::collection_ir::LIST) {
         return ExpressionKind::ObjectCreation {
             type_ref: TypeReference {
                 name: "List".into(),
+                arguments: Vec::new(),
+                nullable: false,
+            },
+            constructor: None,
+            arguments,
+            is_const: false,
+        };
+    }
+    if collection_type == Some(crate::collection_ir::QUEUE) {
+        return ExpressionKind::ObjectCreation {
+            type_ref: TypeReference {
+                name: "Queue".into(),
                 arguments: Vec::new(),
                 nullable: false,
             },
@@ -1088,6 +1135,15 @@ fn lower_call(node: Node<'_>, source: &str, language: AstLanguage) -> Expression
         object, property, ..
     } = &callee.kind
     {
+        if let Some(operation) =
+            crate::collection_ir::intrinsic_for_method(property, arguments.len())
+        {
+            return ExpressionKind::IntrinsicCall {
+                operation,
+                receiver: object.clone(),
+                arguments: arguments.into_iter().map(|value| value.value).collect(),
+            };
+        }
         if property == "of"
             && matches!(&object.kind, ExpressionKind::Identifier(value) if value == "List")
         {
@@ -1097,22 +1153,6 @@ fn lower_call(node: Node<'_>, source: &str, language: AstLanguage) -> Expression
                     .into_iter()
                     .map(|argument| CollectionElement::Expression(argument.value))
                     .collect(),
-            };
-        }
-        if matches!(property.as_str(), "slice" | "subList" | "sublist") {
-            let slice_callee = Expression {
-                kind: ExpressionKind::Member {
-                    object: object.clone(),
-                    property: "slice".into(),
-                    null_aware: false,
-                },
-                source: callee.source.clone(),
-                span: callee.span,
-            };
-            return ExpressionKind::Call {
-                callee: Box::new(slice_callee),
-                arguments,
-                type_arguments: Vec::new(),
             };
         }
     }
@@ -1526,13 +1566,9 @@ pub(crate) fn type_from_text(raw: &str, language: AstLanguage) -> TypeReference 
 }
 
 fn canonical_type_name(name: &str) -> String {
-    let leaf = name.rsplit("::").next().unwrap_or(name).trim();
-    match leaf {
-        "Array" | "ArrayList" | "List" | "Vec" | "list" => "List".into(),
-        "Dictionary" | "HashMap" | "Map" | "dict" | "map" => "Map".into(),
-        "HashSet" | "Set" | "set" => "Set".into(),
-        other => other.into(),
-    }
+    crate::collection_ir::canonical_collection_type(name)
+        .unwrap_or_else(|| name.rsplit("::").next().unwrap_or(name).trim())
+        .into()
 }
 
 pub(crate) fn split_top_level(value: &str) -> Vec<&str> {
@@ -2222,10 +2258,13 @@ mod tests {
                 }
             }
             ExpressionKind::IntrinsicCall {
+                operation,
                 receiver,
                 arguments,
-                ..
             } => {
+                if *operation == crate::typed_ir::IntrinsicOperation::CollectionSlice {
+                    audit.slice = true;
+                }
                 audit_expression(receiver, audit);
                 for argument in arguments {
                     audit_expression(argument, audit);
