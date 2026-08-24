@@ -741,16 +741,30 @@ Future<void> initialize() async {
 
     #[test]
     fn emits_dart_map_contains_key_as_python_membership() {
-        let source = r#"bool hasValue(Map<int, String> valuesMap, int num) {
-  return valuesMap.containsKey(num);
+        let source = r#"List<int> twoSum(List<int> nums, int target) {
+  final visitedNumbers = <int, int>{};
+  for (int i = 0; i < nums.length; i++) {
+    final complement = target - nums[i];
+    if (visitedNumbers.containsKey(complement)) {
+      return [visitedNumbers[complement]!, i];
+    }
+    visitedNumbers[nums[i]] = i;
+  }
+  return [];
 }"#;
         let output = PythonBackend.emit(&DartFrontend.parse(source));
         assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
         assert!(
-            output.code.contains("return num in valuesMap"),
+            output.code.contains("if complement in visitedNumbers:"),
             "{}",
             output.code
         );
+        assert!(
+            output.code.contains("visitedNumbers[nums[i]] = i"),
+            "{}",
+            output.code
+        );
+        assert!(!output.code.contains("visitedNumbers = i"), "{}", output.code);
         assert!(!output.code.contains(".containsKey("), "{}", output.code);
     }
 }

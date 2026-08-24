@@ -789,10 +789,16 @@ fn lower_expression(node: Node<'_>, source: &str) -> Expression {
             match (
                 node.child_by_field_name("object"),
                 field_text(node, "property", source),
+                node.child_by_field_name("index"),
             ) {
-                (Some(object), Some(property)) => ExpressionKind::Member {
+                (Some(object), Some(property), _) => ExpressionKind::Member {
                     object: Box::new(lower_expression(object, source)),
                     property,
+                    null_aware: false,
+                },
+                (Some(object), _, Some(index)) => ExpressionKind::Index {
+                    object: Box::new(lower_expression(object, source)),
+                    index: Box::new(lower_expression(index, source)),
                     null_aware: false,
                 },
                 _ => first_named_child(node)
